@@ -26,12 +26,14 @@ async def get_session() -> AsyncSession:
 
 class WorkflowCreate(BaseModel):
     name: str
+    description: Optional[str] = None
     webhook_slug: Optional[str] = None
     graph: Graph
 
 
 class WorkflowUpdate(BaseModel):
     name: Optional[str] = None
+    description: Optional[str] = None
     webhook_slug: Optional[str] = None
     graph: Optional[Graph] = None
 
@@ -45,6 +47,7 @@ async def list_workflows(session: AsyncSession = Depends(get_session)):
         {
             "id": w.id,
             "name": w.name,
+            "description": w.description,
             "webhook_slug": w.webhook_slug,
             "created_at": w.created_at.isoformat(),
         }
@@ -84,6 +87,7 @@ async def list_runs(workflow_id: Optional[int] = None, status: Optional[str] = N
 async def create_workflow(body: WorkflowCreate, session: AsyncSession = Depends(get_session)):
     stmt = insert(Workflow).values(
         name=body.name,
+        description=body.description,
         webhook_slug=body.webhook_slug,
         graph_json=body.graph.model_dump(by_alias=True),
     )
@@ -102,6 +106,7 @@ async def get_workflow(workflow_id: int, session: AsyncSession = Depends(get_ses
     return {
         "id": wf.id,
         "name": wf.name,
+        "description": wf.description,
         "webhook_slug": wf.webhook_slug,
         "graph": wf.graph_json,
         "created_at": wf.created_at.isoformat(),
@@ -113,6 +118,8 @@ async def update_workflow(workflow_id: int, body: WorkflowUpdate, session: Async
     values: Dict[str, Any] = {}
     if body.name is not None:
         values["name"] = body.name
+    if body.description is not None:
+        values["description"] = body.description
     if body.webhook_slug is not None:
         values["webhook_slug"] = body.webhook_slug
     if body.graph is not None:
@@ -124,6 +131,18 @@ async def update_workflow(workflow_id: int, body: WorkflowUpdate, session: Async
     await session.execute(update(Workflow).where(Workflow.id == workflow_id).values(**values))
     await session.commit()
     return {"updated": True}
+
+
+@router.delete("/workflows/{workflow_id}")
+async def delete_workflow(workflow_id: int, session: AsyncSession = Depends(get_session)):
+    stmt = select(Workflow).where(Workflow.id == workflow_id)
+    result = await session.execute(stmt)
+    wf = result.scalar_one_or_none()
+    if wf is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    await session.delete(wf)
+    await session.commit()
+    return {"deleted": True}
 
 
 class ValidateGraphBody(BaseModel):

@@ -24,6 +24,7 @@ class Workflow(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     webhook_slug: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True)
     graph_json: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
