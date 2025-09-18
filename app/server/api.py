@@ -8,7 +8,7 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import blocks  # noqa: F401 — ensure registry is populated
-from ..blocks.registry import list_blocks
+from ..blocks.registry import list_blocks, list_block_specs
 from ..db.models import Log, Run, Workflow
 from ..db.session import SessionFactory
 from ..engine.graph import toposort
@@ -161,3 +161,8 @@ async def webhook_trigger(slug: str, body: HookPayload, background_tasks: Backgr
 async def get_blocks():
     reg = list_blocks()
     return {"blocks": list(reg.keys())}
+
+
+@router.get("/block-specs")
+async def get_block_specs():
+    return {"blocks": list_block_specs()}

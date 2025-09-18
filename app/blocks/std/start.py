@@ -1,16 +1,30 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+from pydantic import BaseModel, Field
 
 from ..registry import register
-from ..base import RunContext
+from ..base import Block, RunContext
+
+
+class StartInput(BaseModel):
+    payload: Optional[Dict[str, Any]] = Field(None, description="Explicit payload to emit; if not set, uses trigger payload")
+
+
+class StartOutput(BaseModel):
+    data: Any
 
 
 @register("start")
-async def start_block(input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
-    params = input.get("params") or {}
-    payload = params.get("payload")
-    if payload is None:
-        trigger = input.get("trigger") or {}
-        payload = trigger
-    return {"data": payload}
+class StartBlock(Block):
+    type_name = "start"
+    summary = "Start node returns provided payload or trigger payload"
+    input_model = StartInput
+    output_model = StartOutput
+
+    async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
+        payload = self.params.get("payload")
+        if payload is None:
+            payload = (input.get("trigger") or {})
+        return StartOutput(data=payload).model_dump()

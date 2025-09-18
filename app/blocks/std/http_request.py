@@ -1,35 +1,57 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+from pydantic import BaseModel, Field
 
 from ..registry import register
-from ..base import RunContext
+from ..base import Block, RunContext
+
+
+class HttpRequestInput(BaseModel):
+    method: str = Field("GET", description="HTTP method")
+    url: str = Field(..., description="Request URL")
+    headers: Optional[Dict[str, str]] = Field(default=None, description="HTTP headers")
+    body: Optional[Any] = Field(default=None, description="JSON body or raw content")
+
+
+class HttpRequestOutput(BaseModel):
+    status: int
+    headers: Dict[str, Any]
+    data: Any
 
 
 @register("http.request")
-async def http_request_block(input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
-    params: Dict[str, Any] = input.get("params") or {}
-    method = (params.get("method") or "GET").upper()
-    url = params.get("url")
-    if not url:
-        raise ValueError("http.request requires 'url'")
-    headers = params.get("headers") or {}
-    body = params.get("body")
+class HttpRequestBlock(Block):
+    type_name = "http.request"
+    summary = "Perform an HTTP request and return status, headers, data"
+    input_model = HttpRequestInput
+    output_model = HttpRequestOutput
 
-    resp = await ctx.http.request(method, url, headers=headers, json=body if isinstance(body, (dict, list)) else None, content=None if isinstance(body, (dict, list, type(None))) else str(body).encode("utf-8"))
+    async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
+        method = (self.params.get("method") or "GET").upper()
+        url = self.params.get("url")
+        if not url:
+            raise ValueError("http.request requires 'url'")
+        headers = self.params.get("headers") or {}
+        body = self.params.get("body")
 
-    data: Any
-    try:
-        data = resp.json()
-    except Exception:
-        data = await resp.aread()
+        resp = await ctx.http.request(
+            method,
+            url,
+            headers=headers,
+            json=body if isinstance(body, (dict, list)) else None,
+            content=None if isinstance(body, (dict, list, type(None))) else str(body).encode("utf-8"),
+        )
+
+        data: Any
         try:
-            data = data.decode("utf-8")
+            data = resp.json()
         except Exception:
-            pass
+            buf = await resp.aread()
+            try:
+                data = buf.decode("utf-8")
+            except Exception:
+                data = buf
 
-    return {
-        "status": resp.status_code,
-        "headers": dict(resp.headers),
-        "data": data,
-    }
+        return HttpRequestOutput(status=resp.status_code, headers=dict(resp.headers), data=data).model_dump()
