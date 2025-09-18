@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import blocks  # noqa: F401 — ensure registry is populated
 from ..blocks.registry import list_blocks, list_block_specs
-from ..db.models import Log, Run, Workflow
+from ..db.models import Log, Run, Workflow, RunStatusEnum
 from ..db.session import SessionFactory
 from ..engine.graph import toposort
 from ..schemas.graph import Graph
@@ -34,6 +34,50 @@ class WorkflowUpdate(BaseModel):
     name: Optional[str] = None
     webhook_slug: Optional[str] = None
     graph: Optional[Graph] = None
+
+
+@router.get("/workflows")
+async def list_workflows(session: AsyncSession = Depends(get_session)):
+    stmt = select(Workflow).order_by(Workflow.id.asc())
+    result = await session.execute(stmt)
+    rows = result.scalars().all()
+    return [
+        {
+            "id": w.id,
+            "name": w.name,
+            "webhook_slug": w.webhook_slug,
+            "created_at": w.created_at.isoformat(),
+        }
+        for w in rows
+    ]
+
+
+@router.get("/runs")
+async def list_runs(workflow_id: Optional[int] = None, status: Optional[str] = None, session: AsyncSession = Depends(get_session)):
+    stmt = select(Run)
+    if workflow_id is not None:
+        stmt = stmt.where(Run.workflow_id == workflow_id)
+    if status is not None:
+        try:
+            status_enum = RunStatusEnum(status)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid status")
+        stmt = stmt.where(Run.status == status_enum)
+    stmt = stmt.order_by(Run.id.desc())
+
+    result = await session.execute(stmt)
+    rows = result.scalars().all()
+    return [
+        {
+            "id": r.id,
+            "workflow_id": r.workflow_id,
+            "status": r.status.value if hasattr(r.status, "value") else str(r.status),
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+            "trigger_type": r.trigger_type,
+        }
+        for r in rows
+    ]
 
 
 @router.post("/workflows")
