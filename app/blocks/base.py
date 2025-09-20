@@ -5,6 +5,8 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Type
 
 import httpx
 from pydantic import BaseModel
+import re
+from jinja2 import Environment, StrictUndefined
 
 from ..services.gcs import GCSWriter
 
@@ -21,35 +23,53 @@ class Block:
 
     Subclasses should set `type_name` and implement `run`.
     They may override `before` and `after` for lifecycle hooks.
-    Optionally set `input_model` and `output_model` (Pydantic) to expose schemas.
+    Define a single `settings_model` for design-time configuration.
     """
 
     type_name: str = ""
     summary: str = ""
-    input_model: Optional[Type[BaseModel]] = None
+    settings_model: Optional[Type[BaseModel]] = None
     output_model: Optional[Type[BaseModel]] = None
 
-    def __init__(self, params: Dict[str, Any] | None = None) -> None:
-        self.params: Dict[str, Any] = self.validate_params(params or {})
+    def __init__(self, settings: Dict[str, Any] | None = None) -> None:
+        self.settings: Dict[str, Any] = self.validate_settings(settings or {})
 
-    def validate_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        Model = self.input_model
+    def validate_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        Model = self.settings_model
         if Model is not None:
-            model = Model.model_validate(params)  # type: ignore[arg-type]
+            model = Model.model_validate(settings)  # type: ignore[arg-type]
             return model.model_dump()
-        return params
+        return settings
 
     @classmethod
-    def input_schema(cls) -> Optional[Dict[str, Any]]:
-        if cls.input_model is None:
+    def settings_schema(cls) -> Optional[Dict[str, Any]]:
+        if cls.settings_model is None:
             return None
-        return cls.input_model.model_json_schema()  # type: ignore[return-value]
+        return cls.settings_model.model_json_schema()  # type: ignore[return-value]
 
     @classmethod
     def output_schema(cls) -> Optional[Dict[str, Any]]:
         if cls.output_model is None:
             return None
         return cls.output_model.model_json_schema()  # type: ignore[return-value]
+
+    def render_expression(self, template: str, *, upstream: Dict[str, Any] | None = None, extra: Dict[str, Any] | None = None) -> str:
+        """Render with Jinja2 using context composed of upstream + extra (settings/trigger/etc)."""
+        if not isinstance(template, str):
+            return str(template)
+        ctx: Dict[str, Any] = {}
+        if upstream:
+            ctx.update(upstream)
+        if extra:
+            ctx.update(extra)
+        env = Environment(undefined=StrictUndefined, autoescape=False)
+        try:
+            return env.from_string(template).render(**ctx)
+        except Exception:
+            # On undefined variables or errors, fall back to empty-string behavior
+            # by replacing missing variables with "" using a permissive env.
+            env2 = Environment(autoescape=False)
+            return env2.from_string(template).render(**ctx)
 
     async def before(self, input: Dict[str, Any], ctx: RunContext) -> None:  # noqa: ARG002
         return None

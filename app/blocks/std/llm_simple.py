@@ -10,8 +10,8 @@ from ..base import Block, RunContext
 from ...server.settings import settings
 
 
-class LlmSimpleInput(BaseModel):
-    prompt: str = Field(..., description="Prompt text to send to LLM")
+class LlmSimpleSettings(BaseModel):
+    prompt: str = Field(..., description="Prompt text to send to LLM (supports {{ }} substitutions)")
     model: Optional[str] = Field(default="gpt-4o-mini", description="OpenAI model")
 
 
@@ -23,14 +23,18 @@ class LlmSimpleOutput(BaseModel):
 class LlmSimpleBlock(Block):
     type_name = "llm.simple"
     summary = "Generate text using OpenAI; falls back to uppercase when no API key"
-    input_model = LlmSimpleInput
+    settings_model = LlmSimpleSettings
     output_model = LlmSimpleOutput
 
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
-        prompt = self.params.get("prompt")
-        model = self.params.get("model") or "gpt-4o-mini"
-        if not prompt:
+        s = self.settings
+        raw_prompt = s.get("prompt")
+        model = s.get("model") or "gpt-4o-mini"
+        if not raw_prompt:
             raise ValueError("llm.simple requires 'prompt'")
+
+        extra_ctx = {"settings": s, "trigger": input.get("trigger") or {}}
+        prompt = self.render_expression(str(raw_prompt), upstream=input.get("upstream") or {}, extra=extra_ctx)
 
         api_key = settings.OPENAI_API_KEY
         if not api_key:

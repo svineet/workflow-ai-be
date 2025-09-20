@@ -8,7 +8,7 @@ from ..registry import register
 from ..base import Block, RunContext
 
 
-class GcsWriteInput(BaseModel):
+class GcsWriteSettings(BaseModel):
     path: str = Field(..., description="GCS object path within bucket")
     content: Optional[Any] = Field(default=None, description="Content to write; if object/list, will be JSON-encoded")
     as_json: bool = Field(default=False, description="Force JSON encoding")
@@ -23,15 +23,15 @@ class GcsWriteOutput(BaseModel):
 class GcsWriteBlock(Block):
     type_name = "gcs.write"
     summary = "Write content to a GCS object and return URI and size"
-    input_model = GcsWriteInput
+    settings_model = GcsWriteSettings
     output_model = GcsWriteOutput
 
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
-        path = self.params.get("path")
+        path = self.settings.get("path")
         if not path:
             raise ValueError("gcs.write requires 'path'")
-        content = self.params.get("content")
-        as_json = bool(self.params.get("as_json"))
+        content = self.settings.get("content")
+        as_json = bool(self.settings.get("as_json"))
 
         if as_json:
             import json

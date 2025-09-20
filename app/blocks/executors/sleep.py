@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict
 
-from pydantic import BaseModel, Field, condecimal
+from pydantic import BaseModel, Field
 
 from ..registry import register
 from ..base import Block, RunContext
 
 
-class SleepInput(BaseModel):
+class SleepSettings(BaseModel):
     seconds: float = Field(0.1, ge=0, description="Seconds to sleep (non-blocking)")
+    jitter_ms: int = Field(0, ge=0, description="Optional jitter (milliseconds) added to seconds")
 
 
 class SleepOutput(BaseModel):
@@ -21,10 +22,12 @@ class SleepOutput(BaseModel):
 class SleepBlock(Block):
     type_name = "util.sleep"
     summary = "Asynchronously sleep for N seconds"
-    input_model = SleepInput
+    settings_model = SleepSettings
     output_model = SleepOutput
 
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
-        secs = float(self.params.get("seconds", 0))
-        await asyncio.sleep(secs)
-        return SleepOutput(slept=secs).model_dump() 
+        secs = float(self.settings.get("seconds", 0))
+        jitter_ms = int(self.settings.get("jitter_ms", 0))
+        total = secs + max(0, jitter_ms) / 1000.0
+        await asyncio.sleep(total)
+        return SleepOutput(slept=total).model_dump() 

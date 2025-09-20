@@ -4,10 +4,10 @@ import time
 from typing import Dict, Any
 
 
-def _graph_single(node_id: str, type_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def _graph_single(node_id: str, type_name: str, settings: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "nodes": [
-            {"id": node_id, "type": type_name, "params": params},
+            {"id": node_id, "type": type_name, "settings": settings},
         ],
         "edges": [],
     }
@@ -49,15 +49,15 @@ def test_blocks_and_specs(client):
     spec_by_type = {s["type"]: s for s in specs}
     uc = spec_by_type["transform.uppercase"]
     assert uc["kind"] == "executor"
-    assert "input_schema" in uc and "text" in uc["input_schema"]["properties"]
+    assert "settings_schema" in uc and "text" in uc["settings_schema"]["properties"]
 
     add = spec_by_type["math.add"]
     assert add["kind"] == "executor"
-    assert set(add["input_schema"]["properties"].keys()) >= {"a", "b"}
+    assert set(add["settings_schema"]["properties"].keys()) >= {"a", "b"}
 
     jg = spec_by_type["json.get"]
     assert jg["kind"] == "executor"
-    assert "path" in jg["input_schema"]["properties"]
+    assert "path" in jg["settings_schema"]["properties"]
 
 
 def test_run_uppercase_executor(client):
@@ -105,6 +105,58 @@ def test_run_json_get_executor(client):
     run = _poll_run(client, run_id)
     assert run["status"] == "succeeded"
     assert run["outputs_json"]["j1"]["value"] == 42
+
+
+def test_run_uppercase_executor_with_settings(client):
+    graph = {
+        "nodes": [
+            {
+                "id": "u1",
+                "type": "transform.uppercase",
+                "settings": {"text": " foo \n", "trim_whitespace": True},
+            }
+        ],
+        "edges": [],
+    }
+    r = client.post("/workflows", json={"name": "UC2", "graph": graph})
+    assert r.status_code == 200
+    wf_id = r.json()["id"]
+
+    r = client.post(f"/workflows/{wf_id}/run", json={})
+    assert r.status_code == 200
+    run_id = r.json()["id"]
+
+    run = _poll_run(client, run_id)
+    assert run["status"] == "succeeded"
+    assert run["outputs_json"]["u1"]["text"] == "FOO"
+
+
+def test_jinja_templating_prompt_and_url(client):
+    # start -> template -> uppercase
+    graph = {
+        "nodes": [
+            {"id": "s", "type": "start", "settings": {"payload": {"name": "Alice"}}},
+            {"id": "t", "type": "transform.template", "settings": {"template": "Hello {{ s.data.name }}", "values": {}}},
+            {"id": "u", "type": "transform.uppercase", "settings": {"text": "{{ t.text }}"}},
+        ],
+        "edges": [
+            {"id": "e1", "from": "s", "to": "t"},
+            {"id": "e2", "from": "t", "to": "u"},
+        ],
+    }
+
+    r = client.post("/workflows", json={"name": "JinjaFlow", "graph": graph})
+    assert r.status_code == 200
+    wf_id = r.json()["id"]
+
+    r = client.post(f"/workflows/{wf_id}/run", json={})
+    assert r.status_code == 200
+    run_id = r.json()["id"]
+
+    run = _poll_run(client, run_id)
+    assert run["status"] == "succeeded"
+    assert run["outputs_json"]["t"]["text"] == "Hello Alice"
+    assert run["outputs_json"]["u"]["text"] == "HELLO ALICE"
 
 
 def test_run_unknown_block_fails(client):

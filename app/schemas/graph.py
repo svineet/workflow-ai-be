@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 class Node(BaseModel):
     id: str
     type: str
-    params: Dict = Field(default_factory=dict)
+    settings: Dict = Field(default_factory=dict)
 
 
 class Edge(BaseModel):

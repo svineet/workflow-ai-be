@@ -18,8 +18,10 @@ def run_block(type_name: str, input: Dict[str, Any], ctx) -> Any:
     cls = _CLASS_REGISTRY.get(type_name)
     if cls is None:
         raise ValueError(f"Unknown block type: {type_name}")
-    params = (input or {}).get("params") or {}
-    instance = cls(params=params)
+    if not isinstance(input, dict):  # debug guard
+        print("run_block received non-dict input:", type(input))
+    settings = (input or {}).get("settings") or {}
+    instance = cls(settings=settings)
     return instance.run(input, ctx)
 
 
@@ -30,11 +32,13 @@ def list_blocks() -> Mapping[str, Block]:
 def list_block_specs() -> list[Dict[str, Any]]:
     specs: list[Dict[str, Any]] = []
     for t, cls in sorted(_CLASS_REGISTRY.items(), key=lambda kv: kv[0]):
+        settings_schema = getattr(cls, "settings_schema", None)
+        output_schema = getattr(cls, "output_schema", None)
         specs.append({
             "type": t,
-            "kind": "executor",  # unified class-based blocks; keep value for FE compatibility
+            "kind": "executor",
             "summary": getattr(cls, "summary", ""),
-            "input_schema": cls.input_schema(),
-            "output_schema": cls.output_schema(),
+            "settings_schema": settings_schema() if callable(settings_schema) else None,
+            "output_schema": output_schema() if callable(output_schema) else None,
         })
     return specs

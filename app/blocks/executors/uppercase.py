@@ -8,8 +8,9 @@ from ..registry import register
 from ..base import Block, RunContext
 
 
-class UppercaseInput(BaseModel):
+class UppercaseSettings(BaseModel):
     text: str = Field(..., description="Text to transform to uppercase")
+    trim_whitespace: bool = Field(default=False, description="Trim leading/trailing whitespace before converting")
 
 
 class UppercaseOutput(BaseModel):
@@ -20,9 +21,13 @@ class UppercaseOutput(BaseModel):
 class UppercaseBlock(Block):
     type_name = "transform.uppercase"
     summary = "Convert a text string to uppercase"
-    input_model = UppercaseInput
+    settings_model = UppercaseSettings
     output_model = UppercaseOutput
 
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
-        value = self.params.get("text", "")
+        raw = str(self.settings.get("text", ""))
+        # Render expressions if present
+        value = self.render_expression(raw, upstream=input.get("upstream") or {}, extra={"settings": self.settings, "trigger": input.get("trigger") or {}})
+        if self.settings.get("trim_whitespace"):
+            value = str(value).strip()
         return UppercaseOutput(text=str(value).upper()).model_dump() 

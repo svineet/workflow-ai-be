@@ -8,11 +8,13 @@ from ..registry import register
 from ..base import Block, RunContext
 
 
-class HttpRequestInput(BaseModel):
+class HttpRequestSettings(BaseModel):
     method: str = Field("GET", description="HTTP method")
-    url: str = Field(..., description="Request URL")
+    url: str = Field(..., description="Request URL (supports {{ }} substitutions)")
     headers: Optional[Dict[str, str]] = Field(default=None, description="HTTP headers")
-    body: Optional[Any] = Field(default=None, description="JSON body or raw content")
+    body: Optional[Any] = Field(default=None, description="JSON body or raw content (supports {{ }} if string)")
+    follow_redirects: bool = Field(default=True, description="Follow HTTP redirects")
+    timeout_seconds: float = Field(default=30.0, ge=0, description="Request timeout in seconds")
 
 
 class HttpRequestOutput(BaseModel):
@@ -25,16 +27,23 @@ class HttpRequestOutput(BaseModel):
 class HttpRequestBlock(Block):
     type_name = "http.request"
     summary = "Perform an HTTP request and return status, headers, data"
-    input_model = HttpRequestInput
+    settings_model = HttpRequestSettings
     output_model = HttpRequestOutput
 
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
-        method = (self.params.get("method") or "GET").upper()
-        url = self.params.get("url")
-        if not url:
+        s = self.settings
+        method = (s.get("method") or "GET").upper()
+        url_raw = s.get("url")
+        if not url_raw:
             raise ValueError("http.request requires 'url'")
-        headers = self.params.get("headers") or {}
-        body = self.params.get("body")
+        headers = s.get("headers") or {}
+        body = s.get("body")
+        follow_redirects = bool(s.get("follow_redirects", True))
+        timeout_seconds = float(s.get("timeout_seconds", 30.0))
+
+        url = self.render_expression(str(url_raw), upstream=input.get("upstream") or {}, extra={"settings": s, "trigger": input.get("trigger") or {}})
+        if isinstance(body, str):
+            body = self.render_expression(body, upstream=input.get("upstream") or {}, extra={"settings": s, "trigger": input.get("trigger") or {}})
 
         resp = await ctx.http.request(
             method,
@@ -42,6 +51,8 @@ class HttpRequestBlock(Block):
             headers=headers,
             json=body if isinstance(body, (dict, list)) else None,
             content=None if isinstance(body, (dict, list, type(None))) else str(body).encode("utf-8"),
+            follow_redirects=follow_redirects,
+            timeout=timeout_seconds,
         )
 
         data: Any

@@ -4,6 +4,15 @@ import time
 from typing import Dict
 
 
+def _simple_graph() -> Dict:
+    return {
+        "nodes": [
+            {"id": "n1", "type": "start", "settings": {"payload": {"hello": "world"}}},
+        ],
+        "edges": [],
+    }
+
+
 def test_health(client):
     r = client.get("/healthz")
     assert r.status_code == 200
@@ -15,26 +24,18 @@ def test_blocks(client):
     assert r.status_code == 200
     blocks = r.json()["blocks"]
     # Expect std blocks to be registered
-    for expected in ["start", "http.request", "gcs.write", "llm.simple"]:
+    for expected in ["start", "http.request", "gcs.write", "llm.simple", "transform.uppercase", "math.add", "json.get"]:
         assert expected in blocks
 
 
-def _simple_graph() -> Dict:
-    return {
-        "nodes": [
-            {"id": "n1", "type": "start", "params": {"payload": {"hello": "world"}}},
-        ],
-        "edges": [],
-    }
-
-
 def test_workflow_lifecycle_and_run(client):
+    slug = f"hello-webhook-{int(time.time()*1000)}"
     # Create
     r = client.post(
         "/workflows",
         json={
             "name": "Hello World",
-            "webhook_slug": "hello-webhook",
+            "webhook_slug": slug,
             "graph": _simple_graph(),
         },
     )
@@ -85,10 +86,8 @@ def test_workflow_lifecycle_and_run(client):
 
 
 def test_webhook_trigger(client):
-    # Unique slug to avoid collisions across runs
-    slug = f"hook-{int(time.time() * 1000)}"
-
     # Create another workflow to test webhook
+    slug = f"hook-{int(time.time()*1000)}"
     r = client.post(
         "/workflows",
         json={
