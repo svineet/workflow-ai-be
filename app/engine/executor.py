@@ -53,6 +53,7 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
                     "settings": getattr(node, "settings", {}) or {},
                     "upstream": upstream_outputs,
                     "trigger": run.trigger_payload_json,
+                    "node_id": node.id,
                 }
 
                 await _mark_node_status(session, run.id, node.id, node.type, status="running")

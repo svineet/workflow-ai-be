@@ -284,6 +284,12 @@ async def stream_run(run_id: int):
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
+@router.get("/runs/{run_id}/stream")
+async def stream_run_alias(run_id: int):
+    # Backward-compatible alias for frontend clients
+    return await stream_run(run_id)
+
+
 class HookPayload(BaseModel):
     payload: Dict[str, Any]
 
