@@ -4,10 +4,10 @@ import time
 from typing import Any, Dict
 
 
-def _graph_single(node_id: str, type_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def _graph_single(node_id: str, type_name: str, settings: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "nodes": [
-            {"id": node_id, "type": type_name, "params": params},
+            {"id": node_id, "type": type_name, "settings": settings},
         ],
         "edges": [],
     }
@@ -83,4 +83,38 @@ def test_list_workflows_and_runs_filters(client):
 
     # Invalid status -> 400
     r = client.get("/runs", params={"status": "not-a-status"})
-    assert r.status_code == 400 
+    assert r.status_code == 400
+
+
+def test_current_node_id_and_logs_after_id_and_sse(client):
+    graph = _graph_single("u1", "transform.uppercase", {"text": "foo"})
+    r = client.post("/workflows", json={"name": "SSE", "graph": graph})
+    assert r.status_code == 200
+    wf_id = r.json()["id"]
+
+    r = client.post(f"/workflows/{wf_id}/run", json={})
+    assert r.status_code == 200
+    run_id = r.json()["id"]
+
+    # While running, GET /runs/:id should include current_node_id (may be None if too fast)
+    r1 = client.get(f"/runs/{run_id}")
+    assert r1.status_code == 200
+    assert "current_node_id" in r1.json()
+
+    run = _poll_run(client, run_id)
+    assert run["status"] in ("succeeded", "failed")
+
+    # Collect logs, then fetch after the last id
+    rlogs = client.get(f"/runs/{run_id}/logs")
+    assert rlogs.status_code == 200
+    logs = rlogs.json()
+    last_id = logs[-1]["id"] if logs else 0
+
+    rlogs2 = client.get(f"/runs/{run_id}/logs", params={"after_id": last_id})
+    assert rlogs2.status_code == 200
+    assert rlogs2.json() == []
+
+    # SSE smoke test: request stream endpoint; should return 200 and content-type text/event-stream
+    rstream = client.get(f"/runs/{run_id}/logs/stream")
+    assert rstream.status_code == 200
+    assert rstream.headers.get("content-type", "").startswith("text/event-stream") 

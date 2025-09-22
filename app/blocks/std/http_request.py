@@ -45,6 +45,18 @@ class HttpRequestBlock(Block):
         if isinstance(body, str):
             body = self.render_expression(body, upstream=input.get("upstream") or {}, extra={"settings": s, "trigger": input.get("trigger") or {}})
 
+        node_id = input.get("node_id")
+        # Log request details (with safe body preview)
+        try:
+            preview = body if isinstance(body, (dict, list)) else (str(body)[:500] if body is not None else None)
+        except Exception:
+            preview = "<unserializable>"
+        await ctx.logger(
+            f"http.request: sending {method} {url}",
+            {"method": method, "url": url, "headers": headers, "body_preview": preview, "follow_redirects": follow_redirects, "timeout_seconds": timeout_seconds},
+            node_id=node_id,
+        )
+
         resp = await ctx.http.request(
             method,
             url,
@@ -64,5 +76,16 @@ class HttpRequestBlock(Block):
                 data = buf.decode("utf-8")
             except Exception:
                 data = buf
+
+        # Log response details (with safe body preview)
+        try:
+            data_preview = data if isinstance(data, (dict, list)) else (str(data)[:1000])
+        except Exception:
+            data_preview = "<unserializable>"
+        await ctx.logger(
+            f"http.request: received {resp.status_code}",
+            {"status": resp.status_code, "headers": dict(resp.headers), "data_preview": data_preview},
+            node_id=node_id,
+        )
 
         return HttpRequestOutput(status=resp.status_code, headers=dict(resp.headers), data=data).model_dump()

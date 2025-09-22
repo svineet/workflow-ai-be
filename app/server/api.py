@@ -9,12 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import blocks  # noqa: F401 — ensure registry is populated
 from ..blocks.registry import list_blocks, list_block_specs
-from ..db.models import Log, Run, Workflow, RunStatusEnum
+from ..db.models import Log, Run, Workflow, RunStatusEnum, NodeRun
 from ..db.session import SessionFactory
 from ..engine.graph import toposort
 from ..schemas.graph import Graph
 from ..schemas.run import RunCreate
 from ..engine.orchestrator import create_and_start_run
+from starlette.responses import StreamingResponse
+import asyncio
+import json
 
 router = APIRouter()
 
@@ -174,6 +177,31 @@ async def get_run(run_id: int, session: AsyncSession = Depends(get_session)):
     run = result.scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
+
+    current_node_id: Optional[str] = None
+    # Prefer running node if any; otherwise the most recently started node without finished_at
+    nr_stmt = (
+        select(NodeRun)
+        .where(NodeRun.run_id == run.id, NodeRun.status == "running")
+        .order_by(NodeRun.started_at.desc())
+        .limit(1)
+    )
+    nr_res = await session.execute(nr_stmt)
+    nr = nr_res.scalars().first()
+    if nr is None:
+        nr_stmt2 = (
+            select(NodeRun)
+            .where(NodeRun.run_id == run.id)
+            .order_by(NodeRun.started_at.desc())
+            .limit(1)
+        )
+        nr_res2 = await session.execute(nr_stmt2)
+        nr2 = nr_res2.scalars().first()
+        if nr2 is not None and nr2.finished_at is None:
+            current_node_id = nr2.node_id
+    else:
+        current_node_id = nr.node_id
+
     return {
         "id": run.id,
         "workflow_id": run.workflow_id,
@@ -182,12 +210,16 @@ async def get_run(run_id: int, session: AsyncSession = Depends(get_session)):
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "trigger_type": run.trigger_type,
         "outputs_json": run.outputs_json,
+        "current_node_id": current_node_id,
     }
 
 
 @router.get("/runs/{run_id}/logs")
-async def get_run_logs(run_id: int, session: AsyncSession = Depends(get_session)):
-    stmt = select(Log).where(Log.run_id == run_id).order_by(Log.ts.asc())
+async def get_run_logs(run_id: int, after_id: Optional[int] = None, session: AsyncSession = Depends(get_session)):
+    stmt = select(Log).where(Log.run_id == run_id)
+    if after_id is not None:
+        stmt = stmt.where(Log.id > after_id)
+    stmt = stmt.order_by(Log.ts.asc())
     result = await session.execute(stmt)
     rows = result.scalars().all()
     return [
@@ -202,6 +234,54 @@ async def get_run_logs(run_id: int, session: AsyncSession = Depends(get_session)
         }
         for row in rows
     ]
+
+
+@router.get("/runs/{run_id}/stream")
+async def stream_run(run_id: int):
+    async def event_gen():
+        last_id = 0
+        last_status: Optional[str] = None
+        while True:
+            async with SessionFactory() as session:  # type: AsyncSession
+                # first, logs since last id
+                log_stmt = select(Log).where(Log.run_id == run_id, Log.id > last_id).order_by(Log.id.asc())
+                log_res = await session.execute(log_stmt)
+                new_rows = log_res.scalars().all()
+                for row in new_rows:
+                    entry = {
+                        'id': row.id,
+                        'run_id': row.run_id,
+                        'node_id': row.node_id,
+                        'ts': row.ts.isoformat(),
+                        'level': row.level,
+                        'message': row.message,
+                        'data': row.data_json,
+                    }
+                    yield f"data: {json.dumps({'type':'log', 'entry': entry})}\n\n"
+                    msg = row.message or ''
+                    if msg.startswith('Starting node') and row.node_id:
+                        yield f"data: {json.dumps({'type':'node_started', 'node_id': row.node_id})}\n\n"
+                    if (msg.startswith('Finished node') or 'failed' in msg) and row.node_id:
+                        evt = 'node_finished' if msg.startswith('Finished node') else 'node_failed'
+                        yield f"data: {json.dumps({'type':evt, 'node_id': row.node_id})}\n\n"
+                    last_id = max(last_id, row.id)
+
+                # then, status update
+                run_res = await session.execute(select(Run).where(Run.id == run_id))
+                run = run_res.scalar_one_or_none()
+                if run is None:
+                    yield f"data: {json.dumps({'type':'status', 'status':'not_found'})}\n\n"
+                    break
+                status = run.status.value if hasattr(run.status, 'value') else str(run.status)
+                if status != last_status:
+                    last_status = status
+                    yield f"data: {json.dumps({'type':'status', 'status':status})}\n\n"
+                if status in ('succeeded', 'failed'):
+                    break
+
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 class HookPayload(BaseModel):

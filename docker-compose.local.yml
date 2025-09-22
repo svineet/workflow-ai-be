@@ -16,12 +16,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+    env_file:
+      - .env.dev
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/workflow_ai
-      GCS_BUCKET: ${GCS_BUCKET:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
-      PORT: "8000"
     depends_on:
       - db
     ports:

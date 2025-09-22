@@ -23,7 +23,9 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
             return
 
         await _mark_run_running(session, run.id)
+        await session.commit()
 
+        # Build graph and topo order from workflow.graph_json
         from ..schemas.graph import Graph
 
         graph = Graph.model_validate(run.workflow.graph_json)
@@ -32,6 +34,7 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
 
         outputs: Dict[str, Dict[str, Any]] = {}
 
+        # Shared context resources
         http_client = create_http_client()
         gcs = GCSWriter(bucket_name=gcs_bucket) if gcs_bucket else GCSWriter()
 
@@ -53,23 +56,27 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
                 }
 
                 await _mark_node_status(session, run.id, node.id, node.type, status="running")
+                await session.commit()
                 try:
                     result = await run_block(node.type, node_input, ctx)
                     outputs[node.id] = result
                     await _persist_node_success(session, run.id, node.id, node.type, node_input, result)
+                    await session.commit()
                     await logger(f"Finished node {node.id}", node_id=node.id)
                 except Exception as ex:
                     print("EXEC ERROR:", repr(ex))
                     await _persist_node_error(session, run.id, node.id, node.type, node_input, ex)
+                    await session.commit()
                     await logger(f"Node {node.id} failed: {ex}", {"error": str(ex)}, node_id=node.id)
                     raise
 
             await _mark_run_succeeded(session, run.id, outputs)
+            await session.commit()
         except Exception:
             await _mark_run_failed(session, run.id, outputs)
+            await session.commit()
         finally:
             await http_client.aclose()
-            await session.commit()
 
 
 async def _load_run_with_workflow(session: AsyncSession, run_id: int) -> Run | None:
@@ -78,6 +85,7 @@ async def _load_run_with_workflow(session: AsyncSession, run_id: int) -> Run | N
     run = result.scalar_one_or_none()
     if run is None:
         return None
+    # explicit load workflow
     await session.refresh(run, attribute_names=["workflow"])
     return run
 

@@ -11,3 +11,5 @@ from ..db.models import Log
 async def insert_log(session: AsyncSession, run_id: int, message: str, *, node_id: Optional[str] = None, level: str = "info", data: Optional[Dict[str, Any]] = None) -> None:
     stmt = insert(Log).values(run_id=run_id, node_id=node_id, level=level, message=message, data_json=data or {})
     await session.execute(stmt)
+    # Commit immediately so streaming clients in a separate session can see the log
+    await session.commit()

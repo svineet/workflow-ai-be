@@ -36,9 +36,23 @@ class LlmSimpleBlock(Block):
         extra_ctx = {"settings": s, "trigger": input.get("trigger") or {}}
         prompt = self.render_expression(str(raw_prompt), upstream=input.get("upstream") or {}, extra=extra_ctx)
 
+        node_id = input.get("node_id")
+        # Log request preview
+        await ctx.logger(
+            "llm.simple: sending",
+            {"model": model, "prompt_preview": str(prompt)[:500]},
+            node_id=node_id,
+        )
+
         api_key = settings.OPENAI_API_KEY
         if not api_key:
-            return LlmSimpleOutput(text=str(prompt).upper()).model_dump()
+            text = str(prompt).upper()
+            await ctx.logger(
+                "llm.simple: fallback",
+                {"reason": "no_api_key", "text_preview": text[:500]},
+                node_id=node_id,
+            )
+            return LlmSimpleOutput(text=text).model_dump()
 
         client = AsyncOpenAI(api_key=api_key)
         try:
@@ -48,6 +62,11 @@ class LlmSimpleBlock(Block):
                 temperature=0.2,
             )
             text = completion.choices[0].message.content or ""
+            await ctx.logger(
+                "llm.simple: received",
+                {"model": model, "text_preview": text[:1000]},
+                node_id=node_id,
+            )
             return LlmSimpleOutput(text=text).model_dump()
         finally:
             await client.close()

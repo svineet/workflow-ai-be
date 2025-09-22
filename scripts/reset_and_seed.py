@@ -55,6 +55,19 @@ MINIMAL_GRAPH: Dict[str, Any] = {
 }
 
 
+SLEEP_GRAPH: Dict[str, Any] = {
+    "nodes": [
+        {"id": "sleep1", "type": "util.sleep", "settings": {"seconds": 0.2}},
+        {"id": "sleep2", "type": "util.sleep", "settings": {"seconds": 0.2}},
+        {"id": "sleep3", "type": "util.sleep", "settings": {"seconds": 0.2}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "sleep1", "to": "sleep2"},
+        {"id": "e2", "from": "sleep2", "to": "sleep3"},
+    ],
+}
+
+
 async def clear_db(session: AsyncSession) -> None:
     # order due to FKs with CASCADE
     await session.execute(delete(Log))
@@ -78,6 +91,12 @@ async def seed_db(session: AsyncSession) -> None:
                 "description": "Start -> Show",
                 "webhook_slug": None,
                 "graph_json": MINIMAL_GRAPH,
+            },
+            {
+                "name": "Sleep Chain",
+                "description": "Three sleeps in sequence to test highlighting",
+                "webhook_slug": None,
+                "graph_json": SLEEP_GRAPH,
             },
         ],
     )
@@ -107,7 +126,7 @@ async def main() -> None:
         async with session.begin():
             await seed_db(session)
         await session.commit()
-    print("Seeded 2 workflows.")
+    print("Seeded 3 workflows.")
 
 
 if __name__ == "__main__":
