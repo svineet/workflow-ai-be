@@ -39,7 +39,7 @@ class LlmSimpleBlock(Block):
         node_id = input.get("node_id")
         # Log request preview
         await ctx.logger(
-            "llm.simple: sending",
+            f"llm.simple: sending [{model}]",
             {"model": model, "prompt_preview": str(prompt)[:500]},
             node_id=node_id,
         )
@@ -48,7 +48,7 @@ class LlmSimpleBlock(Block):
         if not api_key:
             text = str(prompt).upper()
             await ctx.logger(
-                "llm.simple: fallback",
+                f"llm.simple: fallback [{model}]",
                 {"reason": "no_api_key", "text_preview": text[:500]},
                 node_id=node_id,
             )
@@ -59,11 +59,11 @@ class LlmSimpleBlock(Block):
             completion = await client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
+                temperature=1.0,
             )
             text = completion.choices[0].message.content or ""
             await ctx.logger(
-                "llm.simple: received",
+                f"llm.simple: received [{model}]",
                 {"model": model, "text_preview": text[:1000]},
                 node_id=node_id,
             )
