@@ -236,7 +236,7 @@ async def get_run_logs(run_id: int, after_id: Optional[int] = None, session: Asy
     ]
 
 
-@router.get("/runs/{run_id}/stream")
+@router.get("/runs/{run_id}/logs/stream")
 async def stream_run(run_id: int):
     async def event_gen():
         last_id = 0
