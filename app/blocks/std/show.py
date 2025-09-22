@@ -9,7 +9,7 @@ from ..base import Block, RunContext
 
 
 class ShowSettings(BaseModel):
-    title: Optional[str] = Field(default=None, description="Optional title to display in UI")
+    template: Optional[str] = Field(default=None, description="Jinja template to render as Markdown in UI")
 
 
 class ShowOutput(BaseModel):
@@ -25,10 +25,20 @@ class ShowBlock(Block):
 
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
         upstream = input.get("upstream") or {}
-        payload = {"upstream": upstream, "settings": self.settings, "title": self.settings.get("title")}
+        template = (self.settings or {}).get("template") or ""
         node_id = input.get("node_id")
+        # Render the template using Jinja with upstream + extra context
+        extra_ctx = {
+            "settings": self.settings or {},
+            "trigger": input.get("trigger_payload") or input.get("trigger") or {},
+            "upstream": upstream,
+        }
+        try:
+            rendered = self.render_expression(template, upstream=upstream, extra=extra_ctx)
+        except Exception:
+            rendered = ""
+        payload = {"upstream": upstream, "settings": self.settings, "template": template, "rendered": rendered}
         # Build concise inline summary for message
-        title = payload.get("title")
         upstream_keys = list((upstream or {}).keys())[:20]
         # Try to extract a short preview from first upstream value
         preview_val = None
@@ -45,14 +55,14 @@ class ShowBlock(Block):
         except Exception:
             preview_val = None
 
-        message = f"ShowBlock input title={title!r} upstream_keys={upstream_keys}"
+        message = f"ShowBlock rendered upstream_keys={upstream_keys}"
         if preview_val:
             message += f" preview={preview_val!r}"
 
         # Log a compact preview and full payload in data
         try:
-            preview = {"title": title, "upstream_keys": upstream_keys, "preview": preview_val}
+            preview = {"upstream_keys": upstream_keys, "preview": preview_val, "has_rendered": bool(rendered)}
         except Exception:
-            preview = {"title": title, "upstream_keys": "<error>"}
+            preview = {"upstream_keys": "<error>"}
         await ctx.logger(message, {"preview": preview, "full": payload}, node_id=node_id)
         return ShowOutput(data=payload).model_dump() 
