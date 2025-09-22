@@ -54,7 +54,10 @@ class Block:
         return cls.output_model.model_json_schema()  # type: ignore[return-value]
 
     def render_expression(self, template: str, *, upstream: Dict[str, Any] | None = None, extra: Dict[str, Any] | None = None) -> str:
-        """Render with Jinja2 using context composed of upstream + extra (settings/trigger/etc)."""
+        """Render with Jinja2 using context composed of upstream + extra (settings/trigger/etc).
+
+        Uses StrictUndefined so missing variables raise errors, matching test expectations.
+        """
         if not isinstance(template, str):
             return str(template)
         ctx: Dict[str, Any] = {}
@@ -63,13 +66,7 @@ class Block:
         if extra:
             ctx.update(extra)
         env = Environment(undefined=StrictUndefined, autoescape=False)
-        try:
-            return env.from_string(template).render(**ctx)
-        except Exception:
-            # On undefined variables or errors, fall back to empty-string behavior
-            # by replacing missing variables with "" using a permissive env.
-            env2 = Environment(autoescape=False)
-            return env2.from_string(template).render(**ctx)
+        return env.from_string(template).render(**ctx)
 
     async def before(self, input: Dict[str, Any], ctx: RunContext) -> None:  # noqa: ARG002
         return None
