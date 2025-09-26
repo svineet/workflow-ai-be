@@ -34,7 +34,7 @@ def test_agent_with_openai_live(client):  # uses session client/DB, but sets Ope
                 "type": "agent.react",
                 "settings": {
                     "system": "You are a math assistant. Use the calculator tool when needed.",
-                    "messages": [{"role": "user", "content": "What is 2 + 2?"}],
+                    "prompt": "What is 2 + 2?",
                     "model": "gpt-4o-mini",
                     "temperature": 0.0,
                     "max_steps": 3,

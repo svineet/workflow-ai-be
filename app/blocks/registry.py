@@ -32,15 +32,34 @@ def list_blocks() -> Mapping[str, Block]:
 def list_block_specs() -> list[Dict[str, Any]]:
     specs: list[Dict[str, Any]] = []
     for t, cls in sorted(_CLASS_REGISTRY.items(), key=lambda kv: kv[0]):
-        settings_schema = getattr(cls, "settings_schema", None)
-        output_schema = getattr(cls, "output_schema", None)
+        settings_schema_fn = getattr(cls, "settings_schema", None)
+        output_schema_fn = getattr(cls, "output_schema", None)
+
+        settings_schema = settings_schema_fn() if callable(settings_schema_fn) else None
+        output_schema = output_schema_fn() if callable(output_schema_fn) else None
+
+        # Derive required vs optional fields from Pydantic model when available
+        required_fields: list[str] = []
+        advanced_fields: list[str] = []
+        try:
+            Model = getattr(cls, "settings_model", None)
+            if Model is not None:
+                for name, field in Model.model_fields.items():  # type: ignore[attr-defined]
+                    if field.is_required():  # type: ignore[attr-defined]
+                        required_fields.append(name)
+                    else:
+                        advanced_fields.append(name)
+        except Exception:
+            pass
+
         specs.append({
             "type": t,
-            "kind": getattr(cls, "kind", "executor"),
+            "kind": "executor",
             "summary": getattr(cls, "summary", ""),
-            "settings_schema": settings_schema() if callable(settings_schema) else None,
-            "output_schema": output_schema() if callable(output_schema) else None,
-            "extras": cls.extras() if hasattr(cls, "extras") and callable(getattr(cls, "extras")) else None,
+            "settings_schema": settings_schema,
+            "output_schema": output_schema,
+            "required_fields": required_fields if required_fields else None,
+            "advanced_fields": advanced_fields if advanced_fields else None,
         })
     return specs
 

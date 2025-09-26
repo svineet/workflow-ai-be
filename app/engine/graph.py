@@ -13,6 +13,8 @@ def build_parent_child_maps(graph: Graph) -> Tuple[Dict[str, List[str]], Dict[st
     parents: Dict[str, List[str]] = {n.id: [] for n in graph.nodes}
     children: Dict[str, List[str]] = {n.id: [] for n in graph.nodes}
     for e in graph.edges:
+        if getattr(e, "kind", "control") == "tool":
+            continue
         parents[e.to].append(e.from_node)
         children[e.from_node].append(e.to)
     return parents, children

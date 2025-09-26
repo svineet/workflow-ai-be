@@ -86,3 +86,19 @@ class Log(Base):
     __table_args__ = (
         Index("ix_logs_run_id_ts", "run_id", "ts"),
     )
+
+
+class ComposioAccount(Base):
+    __tablename__ = "composio_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    toolkit: Mapped[str] = mapped_column(String(128), nullable=False)
+    connected_account_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="active", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_composio_accounts_user_toolkit", "user_id", "toolkit", unique=False),
+    )

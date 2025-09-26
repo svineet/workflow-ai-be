@@ -72,6 +72,7 @@ def safe_eval(expr: str) -> float:
 
 class CalcSettings(BaseModel):
     expression: Optional[str] = Field(default=None, description="Arithmetic expression, e.g., '2 + 2 * 3'. Optional when invoked as a tool with runtime input.")
+    timeout_seconds: Optional[float] = Field(default=None, ge=0.1, description="Optional max execution time; primarily for UI parity")
 
 
 class CalcOutput(BaseModel):

@@ -83,17 +83,50 @@ AGENT_CALC_GRAPH: Dict[str, Any] = {
                 "prompt": "Please compute this: {{ start.query }}",
                 "model": "gpt-5",
                 "temperature": 1,
-                "max_steps": 4,
-                "tools": [
-                    {"name": "calculator", "type": "tool.calculator", "settings": {}}
-                ],
+                "max_steps": 4
             },
         },
+        {"id": "calc", "type": "tool.calculator", "settings": {}},
         {"id": "show", "type": "show", "settings": {"template": "Agent final: {{ upstream.agent.final }}"}},
     ],
     "edges": [
         {"id": "e1", "from": "start", "to": "agent"},
         {"id": "e2", "from": "agent", "to": "show"},
+        {"id": "t1", "from": "agent", "to": "calc", "kind": "tool"},
+    ],
+}
+
+
+COMPOSIO_GMAIL_EMAIL_GRAPH: Dict[str, Any] = {
+    "nodes": [
+        {
+            "id": "agent",
+            "type": "agent.react",
+            "settings": {
+                "system": "You are a witty assistant. Create a short, family‑friendly, funny one‑liner about coding.",
+                "prompt": "Write a short funny one‑liner about coding in Python.",
+                "model": "gpt-5",
+                "temperature": 1.0,
+                "max_steps": 3,
+            },
+        },
+        {
+            "id": "email",
+            "type": "tool.composio",
+            "settings": {
+                "toolkit": "GMAIL",
+                "tool_slug": "GMAIL_SEND_EMAIL",
+                "args": {
+                    "to": ["saivineet89+agent@gmail.com"],
+                    "subject": "A joke for you",
+                    "body": "{{ upstream.agent.final }}"
+                }
+            },
+        },
+    ],
+    "edges": [
+        # Tool linkage from agent to tool node
+        {"id": "t1", "from": "agent", "to": "email", "kind": "tool"}
     ],
 }
 
@@ -130,9 +163,15 @@ async def seed_db(session: AsyncSession) -> None:
             },
             {
                 "name": "Agent Calculator (Start -> Agent -> Show)",
-                "description": "Start query flows to agent prompt; agent uses calculator tool",
+                "description": "Start query flows to agent prompt; agent uses calculator tool via tool edge",
                 "webhook_slug": None,
                 "graph_json": AGENT_CALC_GRAPH,
+            },
+            {
+                "name": "Composio Gmail Joke",
+                "description": "Agent generates a one‑liner and emails it via Gmail (requires Composio GMAIL connection)",
+                "webhook_slug": None,
+                "graph_json": COMPOSIO_GMAIL_EMAIL_GRAPH,
             },
         ],
     )
@@ -162,7 +201,7 @@ async def main() -> None:
         async with session.begin():
             await seed_db(session)
         await session.commit()
-    print("Seeded 4 workflows.")
+    print("Seeded 5 workflows.")
 
 
 if __name__ == "__main__":

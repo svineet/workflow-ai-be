@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
@@ -10,8 +10,8 @@ from ..base import Block, RunContext
 
 
 class SleepSettings(BaseModel):
-    seconds: float = Field(0.1, ge=0, description="Seconds to sleep (non-blocking)")
-    jitter_ms: int = Field(0, ge=0, description="Optional jitter (milliseconds) added to seconds")
+    seconds: Optional[float] = Field(0.1, ge=0, description="Seconds to sleep (non-blocking)")
+    jitter_ms: Optional[int] = Field(0, ge=0, description="Optional jitter (milliseconds) added to seconds")
 
 
 class SleepOutput(BaseModel):
@@ -26,7 +26,7 @@ class SleepBlock(Block):
     output_model = SleepOutput
 
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
-        secs = float(self.settings.get("seconds", 0))
+        secs = float(self.settings.get("seconds", 0.1))
         jitter_ms = int(self.settings.get("jitter_ms", 0))
         total = secs + max(0, jitter_ms) / 1000.0
         await asyncio.sleep(total)

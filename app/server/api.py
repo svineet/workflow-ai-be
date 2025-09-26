@@ -2,22 +2,25 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import blocks  # noqa: F401 — ensure registry is populated
 from ..blocks.registry import list_blocks, list_block_specs
-from ..db.models import Log, Run, Workflow, RunStatusEnum, NodeRun
+from ..db.models import Log, Run, Workflow, RunStatusEnum, NodeRun, ComposioAccount
 from ..db.session import SessionFactory
 from ..engine.graph import toposort
 from ..schemas.graph import Graph
 from ..schemas.run import RunCreate
 from ..engine.orchestrator import create_and_start_run
-from starlette.responses import StreamingResponse
+from ..server.settings import settings
+from ..services.composio import get_composio_client
+from starlette.responses import StreamingResponse, RedirectResponse
 import asyncio
 import json
+import secrets
 
 router = APIRouter()
 
@@ -25,6 +28,34 @@ router = APIRouter()
 async def get_session() -> AsyncSession:
     async with SessionFactory() as session:
         yield session
+
+
+def _current_user_id(request: Request) -> str:
+    # TODO: integrate with real auth; for now, single-tenant system user
+    return "system-user"
+
+
+def _sign_state(data: Dict[str, Any]) -> str:
+    # Minimal opaque token; TODO: HMAC sign
+    return json.dumps(data)
+
+
+def _parse_state(state: str) -> Dict[str, Any]:
+    try:
+        return json.loads(state)
+    except Exception:
+        return {}
+
+
+def _frontend_base_url() -> str:
+    # Prefer explicit env
+    if settings.FRONTEND_BASE_URL:
+        return settings.FRONTEND_BASE_URL.rstrip("/")
+    # Then first CORS origin if set
+    if settings.CORS_ORIGINS and settings.CORS_ORIGINS[0] != "*":
+        return settings.CORS_ORIGINS[0].rstrip("/")
+    # Fallback to default Vite dev server
+    return "http://localhost:5173"
 
 
 class WorkflowCreate(BaseModel):
@@ -123,7 +154,13 @@ async def list_workflows(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/runs")
-async def list_runs(workflow_id: Optional[int] = None, status: Optional[str] = None, session: AsyncSession = Depends(get_session)):
+async def list_runs(
+    workflow_id: Optional[int] = None,
+    status: Optional[str] = None,
+    limit: Optional[int] = None,
+    before_id: Optional[int] = None,
+    session: AsyncSession = Depends(get_session),
+):
     stmt = select(Run)
     if workflow_id is not None:
         stmt = stmt.where(Run.workflow_id == workflow_id)
@@ -133,8 +170,35 @@ async def list_runs(workflow_id: Optional[int] = None, status: Optional[str] = N
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid status")
         stmt = stmt.where(Run.status == status_enum)
+    if before_id is not None:
+        stmt = stmt.where(Run.id < before_id)
     stmt = stmt.order_by(Run.id.desc())
 
+    # When limit is provided, use cursor-style pagination and return an envelope
+    if limit is not None:
+        if limit <= 0:
+            raise HTTPException(status_code=400, detail="limit must be positive")
+        # Hard cap to avoid overly large queries
+        page_size = min(limit, 100)
+        result = await session.execute(stmt.limit(page_size + 1))
+        rows_all = result.scalars().all()
+        rows = rows_all[:page_size]
+        has_more = len(rows_all) > page_size
+        items = [
+            {
+                "id": r.id,
+                "workflow_id": r.workflow_id,
+                "status": r.status.value if hasattr(r.status, "value") else str(r.status),
+                "started_at": r.started_at.isoformat() if r.started_at else None,
+                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                "trigger_type": r.trigger_type,
+            }
+            for r in rows
+        ]
+        next_cursor = rows[-1].id if has_more and rows else None
+        return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
+
+    # Default: preserve legacy behavior returning a simple list
     result = await session.execute(stmt)
     rows = result.scalars().all()
     return [
@@ -381,3 +445,151 @@ async def get_blocks():
 @router.get("/block-specs")
 async def get_block_specs():
     return {"blocks": list_block_specs()}
+
+
+class ComposioAuthorizeBody(BaseModel):
+    toolkit: str
+
+
+@router.post("/integrations/composio/authorize")
+async def composio_authorize(body: ComposioAuthorizeBody, request: Request):
+    client = get_composio_client()
+    if client is None:
+        raise HTTPException(status_code=400, detail="Composio is not configured. Set COMPOSIO_API_KEY and install composio.")
+    user_id = _current_user_id(request)
+    auth_config_id = settings.COMPOSIO_AUTH_CONFIGS.get(body.toolkit)
+    if not auth_config_id:
+        raise HTTPException(status_code=400, detail="Unknown toolkit or COMPOSIO_AUTH_CONFIGS missing for requested toolkit")
+    state = _sign_state({"tk": body.toolkit, "nonce": secrets.token_hex(8)})
+    cb = str(request.url_for("composio_callback"))
+    try:
+        # Prefer hosted connect link for OAuth/API-Key flows
+        conn_req = client.connected_accounts.link(user_id, auth_config_id, callback_url=f"{cb}?state={state}&toolkit={body.toolkit}")
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Failed to create connect link: {ex}")
+    return {"redirect_url": getattr(conn_req, 'redirect_url', None), "connection_request_id": getattr(conn_req, "id", None)}
+
+
+@router.get("/integrations/composio/callback")
+async def composio_callback(
+    connection_request_id: Optional[str] = None,
+    toolkit: Optional[str] = None,
+    state: Optional[str] = None,
+    connected_account_id: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+):
+    client = get_composio_client()
+    if client is None:
+        raise HTTPException(status_code=400, detail="Composio is not configured. Set COMPOSIO_API_KEY and install composio.")
+    if state is None or toolkit is None:
+        raise HTTPException(status_code=400, detail="Missing state/toolkit")
+    _ = _parse_state(state)  # keep for future use
+    user_id = "system-user"  # single-tenant for now
+    # Wait for connection using request id if provided
+    connected = None
+    if connection_request_id:
+        try:
+            connected = client.connected_accounts.wait_for_connection(connection_request_id)
+        except Exception:
+            connected = None
+    # Extract id robustly
+    candidate_ids: list[str] = []
+    if connected is not None:
+        for attr in ("connected_account_id", "id", "account_id"):
+            try:
+                val = getattr(connected, attr, None)
+                if isinstance(val, str) and val:
+                    candidate_ids.append(val)
+            except Exception:
+                pass
+        # Also check dict-like
+        if hasattr(connected, "get") and callable(getattr(connected, "get")):
+            for k in ("connected_account_id", "id", "account_id"):
+                try:
+                    val = connected.get(k)
+                    if isinstance(val, str) and val:
+                        candidate_ids.append(val)
+                except Exception:
+                    pass
+    if connected_account_id:
+        candidate_ids.insert(0, connected_account_id)
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    resolved_id = None
+    for cid in candidate_ids:
+        if cid in seen:
+            continue
+        seen.add(cid)
+        resolved_id = cid
+        break
+
+    frontend = _frontend_base_url()
+    success_url = f"{frontend}/integrations/success"
+
+    if not resolved_id:
+        # No connected id available; redirect but do not persist
+        return RedirectResponse(url=success_url)
+
+    await session.execute(
+        insert(ComposioAccount).values(
+            user_id=user_id,
+            toolkit=toolkit,
+            connected_account_id=resolved_id,
+            status="active",
+        )
+    )
+    await session.commit()
+    return RedirectResponse(url=success_url)
+
+
+@router.get("/integrations/composio/accounts")
+async def list_composio_accounts(toolkit: Optional[str] = None, session: AsyncSession = Depends(get_session)):
+    user_id = "system-user"
+    stmt = select(ComposioAccount).where(ComposioAccount.user_id == user_id)
+    if toolkit:
+        stmt = stmt.where(ComposioAccount.toolkit == toolkit)
+    res = await session.execute(stmt)
+    rows = res.scalars().all()
+    return [
+        {
+            "id": r.id,
+            "toolkit": r.toolkit,
+            "connected_account_id": r.connected_account_id,
+            "status": r.status,
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/integrations")
+async def list_integrations(session: AsyncSession = Depends(get_session)):
+    user_id = "system-user"
+    configured_toolkits = settings.COMPOSIO_TOOLKITS
+    # Also include any toolkits that have accounts in DB
+    tk_stmt = select(ComposioAccount.toolkit).where(ComposioAccount.user_id == user_id).distinct()
+    tk_res = await session.execute(tk_stmt)
+    db_toolkits = [row[0] for row in tk_res.all()]
+    # Preserve configured order, then append any others from DB
+    ordered_toolkits: list[str] = list(dict.fromkeys(list(configured_toolkits) + db_toolkits))
+
+    result: list[Dict[str, Any]] = []
+    for tk in ordered_toolkits:
+        stmt = select(ComposioAccount).where(ComposioAccount.user_id == user_id, ComposioAccount.toolkit == tk)
+        res = await session.execute(stmt)
+        rows = res.scalars().all()
+        result.append({
+            "provider": "composio",
+            "toolkit": tk,
+            "connected": len(rows) > 0,
+            "accounts": [
+                {
+                    "id": r.id,
+                    "connected_account_id": r.connected_account_id,
+                    "status": r.status,
+                    "created_at": r.created_at.isoformat(),
+                }
+                for r in rows
+            ],
+        })
+    return {"integrations": result}

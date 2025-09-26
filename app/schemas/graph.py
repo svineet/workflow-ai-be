@@ -15,6 +15,7 @@ class Edge(BaseModel):
     id: str
     from_node: str = Field(alias="from")
     to: str
+    kind: str = Field(default="control", description="Edge kind: 'control' (default) or 'tool'")
 
     class Config:
         populate_by_name = True
@@ -34,7 +35,7 @@ class Graph(BaseModel):
         for e in self.edges:
             if e.from_node not in node_ids or e.to not in node_ids:
                 raise ValueError(f"Edge {e.id} references missing node(s)")
-        # Acyclic via topo sort
+        # Acyclic via topo sort (tool edges are ignored here)
         self._toposort()
         return self
 
@@ -42,6 +43,8 @@ class Graph(BaseModel):
         children: Dict[str, List[str]] = {n.id: [] for n in self.nodes}
         indeg: Dict[str, int] = {n.id: 0 for n in self.nodes}
         for e in self.edges:
+            if getattr(e, "kind", "control") == "tool":
+                continue
             children[e.from_node].append(e.to)
             indeg[e.to] += 1
         queue = [nid for nid, d in indeg.items() if d == 0]

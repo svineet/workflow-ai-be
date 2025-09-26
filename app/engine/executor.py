@@ -34,6 +34,26 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
 
         outputs: Dict[str, Dict[str, Any]] = {}
 
+        # Precompute agent -> tool specs from tool edges
+        node_by_id: Dict[str, Any] = {n.id: n for n in graph.nodes}
+        tool_edges = [e for e in graph.edges if getattr(e, "kind", "control") == "tool"]
+        agent_id_to_tools: Dict[str, list[Dict[str, Any]]] = {}
+        for e in tool_edges:
+            agent_node = node_by_id.get(e.from_node)
+            tool_node = node_by_id.get(e.to)
+            if not agent_node or not tool_node:
+                continue
+            # Only attach tools to agent.kind nodes
+            # We cannot import the class here easily; rely on type prefix convention
+            if not (str(agent_node.type).startswith("agent.")):
+                continue
+            agent_tools = agent_id_to_tools.setdefault(agent_node.id, [])
+            agent_tools.append({
+                "name": tool_node.id,
+                "type": tool_node.type,
+                "settings": getattr(tool_node, "settings", {}) or {},
+            })
+
         # Shared context resources
         http_client = create_http_client()
         gcs = GCSWriter(bucket_name=gcs_bucket) if gcs_bucket else GCSWriter()
@@ -54,6 +74,12 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
                     "upstream": upstream_outputs,
                     "trigger": run.trigger_payload_json,
                 }
+
+                # If this is an agent node and we have tool edges, inject derived tools for runtime
+                if str(node.type).startswith("agent."):
+                    derived_tools = agent_id_to_tools.get(node.id)
+                    if derived_tools:
+                        node_input["__derived_tools_from_edges__"] = derived_tools
 
                 await _mark_node_status(session, run.id, node.id, node.type, status="running")
                 await session.commit()

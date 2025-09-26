@@ -64,7 +64,23 @@ class AgentReactBlock(Block):
         max_steps = int(s.get("max_steps", 8))
         system = s.get("system") or "You are a helpful assistant. Use tools when needed."
         prompt_single: Optional[str] = s.get("prompt")
+
+        # Start with tools from settings for backward compatibility
         tools_spec: List[Dict[str, Any]] = list(s.get("tools") or [])
+
+        # Merge in derived tools from graph edges if provided by executor
+        derived_tools = input.get("__derived_tools_from_edges__")
+        if isinstance(derived_tools, list) and derived_tools:
+            # Ensure no duplicates by name; derived take precedence on same name
+            existing_by_name = {t.get("name"): t for t in tools_spec if isinstance(t, dict) and t.get("name")}
+            for t in derived_tools:
+                if not isinstance(t, dict):
+                    continue
+                name = t.get("name")
+                if not name:
+                    continue
+                existing_by_name[name] = t
+            tools_spec = list(existing_by_name.values())
 
         node_id = input.get("node_id")
         await ctx.logger(

@@ -27,8 +27,17 @@ class TemplateBlock(Block):
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
         s = self.settings
         s_str = str(s.get("template", ""))
-        # merge values into context so {{key}} works
         upstream = input.get("upstream") or {}
-        extra = {"settings": s, **(s.get("values") or {})}
+        # Expose upstream node ids directly to their data payloads, e.g., {{ s.name }}
+        flat_nodes_ctx: Dict[str, Any] = {}
+        try:
+            for k, v in (upstream or {}).items():
+                if isinstance(v, dict) and "data" in v:
+                    flat_nodes_ctx[k] = v.get("data")
+                else:
+                    flat_nodes_ctx[k] = v
+        except Exception:
+            flat_nodes_ctx = {}
+        extra = {"settings": s, **(s.get("values") or {}), **flat_nodes_ctx}
         out = self.render_expression(s_str, upstream=upstream, extra=extra)
         return TemplateOutput(text=out).model_dump() 
