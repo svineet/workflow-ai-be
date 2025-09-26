@@ -1,7 +1,11 @@
 import asyncio
 import json
 import os
+import sys
 from typing import Any, Dict
+
+# Ensure 'app' is importable when running as a script
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,6 +72,32 @@ SLEEP_GRAPH: Dict[str, Any] = {
 }
 
 
+AGENT_CALC_GRAPH: Dict[str, Any] = {
+    "nodes": [
+        {"id": "start", "type": "start", "settings": {"payload": {"query": "(12 + 7) * 3"}}},
+        {
+            "id": "agent",
+            "type": "agent.react",
+            "settings": {
+                "system": "You are a math assistant. Use the calculator tool to compute the result of the user's query.",
+                "prompt": "Please compute this: {{ start.query }}",
+                "model": "gpt-5",
+                "temperature": 1,
+                "max_steps": 4,
+                "tools": [
+                    {"name": "calculator", "type": "tool.calculator", "settings": {}}
+                ],
+            },
+        },
+        {"id": "show", "type": "show", "settings": {"template": "Agent final: {{ upstream.agent.final }}"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "start", "to": "agent"},
+        {"id": "e2", "from": "agent", "to": "show"},
+    ],
+}
+
+
 async def clear_db(session: AsyncSession) -> None:
     # order due to FKs with CASCADE
     await session.execute(delete(Log))
@@ -98,6 +128,12 @@ async def seed_db(session: AsyncSession) -> None:
                 "webhook_slug": None,
                 "graph_json": SLEEP_GRAPH,
             },
+            {
+                "name": "Agent Calculator (Start -> Agent -> Show)",
+                "description": "Start query flows to agent prompt; agent uses calculator tool",
+                "webhook_slug": None,
+                "graph_json": AGENT_CALC_GRAPH,
+            },
         ],
     )
 
@@ -126,7 +162,7 @@ async def main() -> None:
         async with session.begin():
             await seed_db(session)
         await session.commit()
-    print("Seeded 3 workflows.")
+    print("Seeded 4 workflows.")
 
 
 if __name__ == "__main__":

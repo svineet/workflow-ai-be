@@ -36,9 +36,14 @@ def list_block_specs() -> list[Dict[str, Any]]:
         output_schema = getattr(cls, "output_schema", None)
         specs.append({
             "type": t,
-            "kind": "executor",
+            "kind": getattr(cls, "kind", "executor"),
             "summary": getattr(cls, "summary", ""),
             "settings_schema": settings_schema() if callable(settings_schema) else None,
             "output_schema": output_schema() if callable(output_schema) else None,
+            "extras": cls.extras() if hasattr(cls, "extras") and callable(getattr(cls, "extras")) else None,
         })
     return specs
+
+
+def get_block_class(type_name: str) -> Type[Block] | None:
+    return _CLASS_REGISTRY.get(type_name)

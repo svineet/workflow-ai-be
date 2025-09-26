@@ -41,6 +41,70 @@ class WorkflowUpdate(BaseModel):
     graph: Optional[Graph] = None
 
 
+def _validate_and_normalize_agent_tools(graph: Graph) -> Dict[str, Any]:
+    from ..blocks.registry import get_block_class
+
+    # Work on a plain dict for mutation
+    gdict: Dict[str, Any] = graph.model_dump(by_alias=True)
+
+    # Build quick lookup for tool compatibility
+    def is_tool_compatible(type_name: str) -> bool:
+        cls = get_block_class(type_name)
+        if cls is None:
+            return False
+        if getattr(cls, "tool_compatible", False):
+            return True
+        if type_name.startswith("tool."):
+            return True
+        extras = cls.extras() if hasattr(cls, "extras") and callable(getattr(cls, "extras")) else None
+        if isinstance(extras, dict) and extras.get("toolCompatible") is True:
+            return True
+        return False
+
+    # Validate each agent node
+    for node in gdict.get("nodes", []):
+        type_name = node.get("type")
+        cls = get_block_class(type_name)
+        is_agent = (type_name or "").startswith("agent.") or (cls is not None and getattr(cls, "kind", "") == "agent")
+        if not is_agent:
+            continue
+        settings = node.get("settings") or {}
+        tools = settings.get("tools") or []
+        # Enforce unique names
+        seen: set[str] = set()
+        normalized_tools: list[Dict[str, Any]] = []
+        for t in tools:
+            tname = (t or {}).get("name")
+            ttype = (t or {}).get("type")
+            tsettings = (t or {}).get("settings") or {}
+            if not tname or not isinstance(tname, str):
+                raise HTTPException(status_code=400, detail=f"Agent node {node.get('id')}: tool missing valid 'name'")
+            if tname in seen:
+                raise HTTPException(status_code=400, detail=f"Agent node {node.get('id')}: duplicate tool name '{tname}'")
+            seen.add(tname)
+            if not ttype or not isinstance(ttype, str):
+                raise HTTPException(status_code=400, detail=f"Agent node {node.get('id')}: tool '{tname}' missing valid 'type'")
+            if not is_tool_compatible(ttype):
+                raise HTTPException(status_code=400, detail=f"Agent node {node.get('id')}: tool '{tname}' type '{ttype}' is not recognized as tool-compatible")
+            # Validate settings against tool schema if available
+            tcls = get_block_class(ttype)
+            if tcls is None:
+                raise HTTPException(status_code=400, detail=f"Agent node {node.get('id')}: unknown tool type '{ttype}'")
+            Model = getattr(tcls, "settings_model", None)
+            if Model is not None:
+                try:
+                    validated = Model.model_validate(tsettings)
+                    tsettings = validated.model_dump()
+                except Exception as ex:
+                    raise HTTPException(status_code=400, detail=f"Agent node {node.get('id')}: tool '{tname}' settings invalid: {ex}")
+            normalized_tools.append({"name": tname, "type": ttype, "settings": tsettings})
+        # Write back normalized tools
+        settings["tools"] = normalized_tools
+        node["settings"] = settings
+
+    return gdict
+
+
 @router.get("/workflows")
 async def list_workflows(session: AsyncSession = Depends(get_session)):
     stmt = select(Workflow).order_by(Workflow.id.asc())
@@ -88,11 +152,13 @@ async def list_runs(workflow_id: Optional[int] = None, status: Optional[str] = N
 
 @router.post("/workflows")
 async def create_workflow(body: WorkflowCreate, session: AsyncSession = Depends(get_session)):
+    # Validate/normalize agent tools per backend rules
+    gdict = _validate_and_normalize_agent_tools(body.graph)
     stmt = insert(Workflow).values(
         name=body.name,
         description=body.description,
         webhook_slug=body.webhook_slug,
-        graph_json=body.graph.model_dump(by_alias=True),
+        graph_json=gdict,
     )
     result = await session.execute(stmt)
     await session.commit()
@@ -126,7 +192,7 @@ async def update_workflow(workflow_id: int, body: WorkflowUpdate, session: Async
     if body.webhook_slug is not None:
         values["webhook_slug"] = body.webhook_slug
     if body.graph is not None:
-        values["graph_json"] = body.graph.model_dump(by_alias=True)
+        values["graph_json"] = _validate_and_normalize_agent_tools(body.graph)
 
     if not values:
         return {"updated": False}
@@ -282,6 +348,12 @@ async def stream_run(run_id: int):
             await asyncio.sleep(1.0)
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+# Alias route to satisfy clients/tests expecting /runs/{run_id}/logs/stream
+@router.get("/runs/{run_id}/logs/stream")
+async def stream_run_logs_alias(run_id: int):
+    return await stream_run(run_id)
 
 
 class HookPayload(BaseModel):

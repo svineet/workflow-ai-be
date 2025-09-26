@@ -136,7 +136,7 @@ def test_jinja_templating_prompt_and_url(client):
     graph = {
         "nodes": [
             {"id": "s", "type": "start", "settings": {"payload": {"name": "Alice"}}},
-            {"id": "t", "type": "transform.template", "settings": {"template": "Hello {{ s.data.name }}", "values": {}}},
+            {"id": "t", "type": "transform.template", "settings": {"template": "Hello {{ s.name }}", "values": {}}},
             {"id": "u", "type": "transform.uppercase", "settings": {"text": "{{ t.text }}"}},
         ],
         "edges": [

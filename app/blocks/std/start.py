@@ -12,19 +12,18 @@ class StartSettings(BaseModel):
     payload: Optional[Dict[str, Any]] = Field(None, description="Explicit payload to emit; if not set, uses trigger payload")
 
 
-class StartOutput(BaseModel):
-    data: Any
-
-
 @register("start")
 class StartBlock(Block):
     type_name = "start"
-    summary = "Start node returns provided payload or trigger payload"
+    summary = "Start node returns provided payload or trigger payload (as raw object)"
     settings_model = StartSettings
-    output_model = StartOutput
+    output_model = None  # arbitrary shape
 
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
         payload = self.settings.get("payload")
         if payload is None:
             payload = (input.get("trigger") or {})
-        return StartOutput(data=payload).model_dump()
+        # Ensure we return an object so downstream can reference {{ nodeId.key }}
+        if isinstance(payload, dict):
+            return payload
+        return {"value": payload}
