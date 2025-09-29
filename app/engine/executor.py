@@ -66,6 +66,12 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
         try:
             for node_id in order:
                 node = next(n for n in graph.nodes if n.id == node_id)
+
+                # Skip execution of tool nodes; these are invoked by agents via tool edges
+                if str(node.type).startswith("tool."):
+                    await logger(f"Skipping tool node {node.id} in main execution (invoked via agent tools)", node_id=node.id)
+                    continue
+
                 await logger(f"Starting node {node.id}", node_id=node.id)
 
                 upstream_outputs = {pid: outputs[pid] for pid in parents_map.get(node.id, []) if pid in outputs}
@@ -73,6 +79,7 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
                     "settings": getattr(node, "settings", {}) or {},
                     "upstream": upstream_outputs,
                     "trigger": run.trigger_payload_json,
+                    "node_id": node.id,
                 }
 
                 # If this is an agent node and we have tool edges, inject derived tools for runtime

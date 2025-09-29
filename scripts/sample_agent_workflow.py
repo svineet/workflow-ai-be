@@ -20,18 +20,13 @@ AGENT_GRAPH: Dict[str, Any] = {
             "type": "agent.react",
             "settings": {
                 "system": "You are a math assistant. Use the calculator tool to compute when needed.",
-                "messages": [
-                    {"role": "user", "content": "What is (12 + 7) * 3?"}
-                ],
+                "prompt": "What is (12 + 7) * 3?",
                 "model": "gpt-4o-mini",
                 "temperature": 0.0,
-                "max_steps": 5,
-                # Tools configured directly in settings for backend execution
-                "tools": [
-                    {"name": "calculator", "type": "tool.calculator", "settings": {}}
-                ],
+                "max_steps": 5
             },
         },
+        {"id": "calc", "type": "tool.calculator", "settings": {}},
         {
             "id": "show",
             "type": "show",
@@ -40,6 +35,7 @@ AGENT_GRAPH: Dict[str, Any] = {
     ],
     "edges": [
         {"id": "e1", "from": "agent", "to": "show"},
+        {"id": "t1", "from": "agent", "to": "calc", "kind": "tool"},
     ],
 }
 
@@ -56,7 +52,7 @@ async def main() -> None:
                 [
                     {
                         "name": "Agent Calculator Demo",
-                        "description": "Agent.react uses calculator tool to answer a math question",
+                        "description": "Agent.react uses calculator tool via tool edge to answer a math question",
                         "webhook_slug": None,
                         "graph_json": AGENT_GRAPH,
                     }

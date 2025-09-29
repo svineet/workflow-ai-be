@@ -16,26 +16,21 @@ GRAPH: Dict[str, Any] = {
                 "model": "gpt-5",
                 "temperature": 1.0,
                 "max_steps": 3,
-                # Expose gmail send as a tool
-                "tools": [
-                    {
-                        "name": "send_email",
-                        "type": "tool.composio",
-                        "settings": {
-                            "toolkit": "GMAIL",
-                            "tool_slug": "GMAIL_SEND_EMAIL",
-                            "args": {
-                                "to": ["saivineet89+agent@gmail.com"],
-                                "subject": "A joke for you",
-                                "body": "{{ upstream.agent.final }}"
-                            }
-                        }
-                    }
-                ],
             },
         },
+        {
+            "id": "email",
+            "type": "tool.composio",
+            "settings": {
+                "toolkit": "GMAIL",
+                "tool_slug": "GMAIL_SEND_EMAIL",
+                "args": { }
+            }
+        }
     ],
-    "edges": [],
+    "edges": [
+        {"id": "t1", "from": "agent", "to": "email", "kind": "tool"}
+    ],
 }
 
 

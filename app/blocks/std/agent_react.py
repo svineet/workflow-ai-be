@@ -2,28 +2,28 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 
-from ..registry import register
+from ..registry import register, run_block
 from ..base import Block, RunContext
 from ...server.settings import settings
+from ...services.composio import get_composio_openai_agents_client
 
 
 class AgentToolSpec(BaseModel):
-    name: str = Field(..., description="Tool name exposed to the LLM")
-    type: str = Field(..., description="Block type to invoke as the tool (e.g., 'tool.calculator')")
-    settings: Dict[str, Any] = Field(default_factory=dict, description="Base settings for the tool block")
+    name: str = Field(...)
+    type: str = Field(...)
+    settings: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentReactSettings(BaseModel):
     system: Optional[str] = Field(default="You are a helpful assistant. Use tools when needed.")
-    # Prefer a single prompt field
-    prompt: Optional[str] = Field(default=None, description="Single user prompt (supports Jinja)")
-    tools: Optional[List[AgentToolSpec]] = Field(default=None, description="List of tool definitions for the agent")
-    model: Optional[str] = Field(default="gpt-4o-mini", description="OpenAI model")
+    prompt: Optional[str] = Field(default=None)
+    tools: Optional[List[AgentToolSpec]] = Field(default=None)
+    model: Optional[str] = Field(default="gpt-4o-mini")
     temperature: float = Field(default=1.0, ge=0.0, le=2.0)
     max_steps: int = Field(default=8, ge=1, le=32)
     timeout_seconds: float = Field(default=60.0, ge=1.0)
@@ -38,7 +38,7 @@ class AgentReactOutput(BaseModel):
 class AgentReactBlock(Block):
     type_name = "agent.react"
     kind = "agent"
-    summary = "ReAct-style agent that loops until final answer; supports tool calls"
+    summary = "Agent powered by OpenAI Agents SDK with Composio tool execution"
     settings_model = AgentReactSettings
     output_model = AgentReactOutput
 
@@ -59,142 +59,135 @@ class AgentReactBlock(Block):
 
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
         s = self.settings
-        model = s.get("model") or "gpt-5"
-        temperature = float(s.get("temperature", 1))
-        max_steps = int(s.get("max_steps", 8))
         system = s.get("system") or "You are a helpful assistant. Use tools when needed."
         prompt_single: Optional[str] = s.get("prompt")
-
-        # Start with tools from settings for backward compatibility
-        tools_spec: List[Dict[str, Any]] = list(s.get("tools") or [])
-
-        # Merge in derived tools from graph edges if provided by executor
-        derived_tools = input.get("__derived_tools_from_edges__")
-        if isinstance(derived_tools, list) and derived_tools:
-            # Ensure no duplicates by name; derived take precedence on same name
-            existing_by_name = {t.get("name"): t for t in tools_spec if isinstance(t, dict) and t.get("name")}
-            for t in derived_tools:
-                if not isinstance(t, dict):
-                    continue
-                name = t.get("name")
-                if not name:
-                    continue
-                existing_by_name[name] = t
-            tools_spec = list(existing_by_name.values())
+        if prompt_single is None or not str(prompt_single).strip():
+            raise ValueError("agent.react requires 'prompt'")
 
         node_id = input.get("node_id")
         await ctx.logger(
-            f"agent.react: starting [{model}]",
-            {"model": model, "temperature": temperature, "num_tools": len(tools_spec)},
+            "agent.react(openai_agents): start",
+            {"model": s.get("model") or "gpt-4o-mini", "temperature": float(s.get("temperature", 1))},
             node_id=node_id,
         )
 
-        # Render system and inputs with upstream/settings/trigger context
-        upstream_ctx = input.get("upstream") or {}
-        # Make node ids directly point to their data payloads, e.g., {{ start.query }}
-        flat_nodes_ctx: Dict[str, Any] = {}
-        try:
-            for k, v in (upstream_ctx or {}).items():
-                if isinstance(v, dict) and "data" in v:
-                    flat_nodes_ctx[k] = v.get("data")
+        # Build toolkits and composio tool slugs from tool edges (agent -> tool.*)
+        derived_tools = input.get("__derived_tools_from_edges__") or []
+        toolkit_hints: List[str] = []
+        tool_slugs: List[str] = []
+        non_composio_tools: List[Dict[str, Any]] = []
+        for t in derived_tools:
+            try:
+                ttype = str((t or {}).get("type", ""))
+                if ttype.startswith("tool.composio"):
+                    tk = (t.get("settings") or {}).get("toolkit")
+                    slug = (t.get("settings") or {}).get("tool_slug")
+                    if tk and tk not in toolkit_hints:
+                        toolkit_hints.append(tk)
+                    if isinstance(slug, str) and slug:
+                        tool_slugs.append(slug)
                 else:
-                    flat_nodes_ctx[k] = v
-        except Exception:
-            flat_nodes_ctx = {}
-        extra_ctx = {"settings": s, "trigger": input.get("trigger") or {}, **flat_nodes_ctx, "upstream": upstream_ctx}
+                    non_composio_tools.append(t)
+            except Exception:
+                pass
+
+        # If we have any non-Composio tools (e.g. tool.calculator), fallback to internal ReAct loop for those
+        if non_composio_tools:
+            return await self._run_internal_tools_react(system, prompt_single, non_composio_tools, input, ctx)
+
+        composio_agents = get_composio_openai_agents_client()
+        if composio_agents is None:
+            raise ValueError("Composio OpenAI Agents provider is not available. Ensure composio-openai-agents is installed and COMPOSIO_API_KEY is set.")
+
+        # Fetch Composio tools by toolkits and by specific slugs, then merge (docs: combinations are exclusive)
+        tools: List[Dict[str, Any]] = []
         try:
-            system_rendered = self.render_expression(system, upstream=upstream_ctx, extra=extra_ctx) if isinstance(system, str) else str(system)
-        except Exception:
-            system_rendered = system if isinstance(system, str) else ""
+            if toolkit_hints:
+                tk_tools = composio_agents.tools.get(user_id="system-user", toolkits=toolkit_hints)
+                if isinstance(tk_tools, list):
+                    tools.extend(tk_tools)
+            if tool_slugs:
+                slug_tools = composio_agents.tools.get(user_id="system-user", tools=tool_slugs)
+                if isinstance(slug_tools, list):
+                    tools.extend(slug_tools)
+            # If nothing fetched but we have neither hints nor slugs, fall back to env-configured toolkits
+            if not tools and not (toolkit_hints or tool_slugs):
+                env_tools = composio_agents.tools.get(user_id="system-user", toolkits=settings.COMPOSIO_TOOLKITS)
+                if isinstance(env_tools, list):
+                    tools.extend(env_tools)
+        except Exception as ex:
+            await ctx.logger("agent.react(openai_agents): failed to load tools", {"error": str(ex)}, node_id=node_id)
+            tools = []
 
-        rendered_messages: List[Dict[str, Any]] = []
-        if prompt_single is None or not str(prompt_single).strip():
-            raise ValueError("agent.react requires 'prompt'")
-        try:
-            content = self.render_expression(str(prompt_single), upstream=upstream_ctx, extra=extra_ctx)
-        except Exception:
-            content = str(prompt_single)
-        rendered_messages.append({"role": "user", "content": content})
-
-        async def call_tool(tool_name: str, tool_input: Any) -> Any:
-            spec = next((t for t in tools_spec if t.get("name") == tool_name), None)
-            if not spec:
-                raise ValueError(f"Unknown tool: {tool_name}")
-            block_type = spec.get("type")
-            base_settings = spec.get("settings") or {}
-            merged_settings = dict(base_settings)
-            if isinstance(tool_input, dict):
-                merged_settings.update(tool_input)
-            else:
-                if "expression" in base_settings or spec.get("type", "").endswith("calculator"):
-                    merged_settings["expression"] = str(tool_input)
-                else:
-                    merged_settings["input"] = tool_input
-
-            tool_run_input: Dict[str, Any] = {
-                "settings": merged_settings,
-                "upstream": upstream_ctx,
-                "trigger": input.get("trigger") or {},
-                "node_id": f"{node_id}::tool::{tool_name}",
-            }
-            await ctx.logger(
-                f"agent.react: invoking tool {tool_name} ({block_type})",
-                {"tool_name": tool_name, "settings": merged_settings},
-                node_id=node_id,
-            )
-            result = await self._run_block(block_type, tool_run_input, ctx)
-            await ctx.logger(
-                f"agent.react: tool {tool_name} returned",
-                {"result_preview": str(result)[:200]},
-                node_id=node_id,
-            )
-            return result
-
-        tool_instructions = "\n".join((f"- {t.get('name')}: call with JSON input." for t in tools_spec)) or "(no tools available)"
-        react_instructions = (
-            "You may use tools. When using a tool, respond EXACTLY in this format:\n"
-            "Action: <tool_name>\n"
-            "Action Input: <JSON or plain text>\n"
-            "If you have the final answer, respond with:\n"
-            "Final Answer: <text>\n"
+        await ctx.logger(
+            "agent.react(openai_agents): tools prepared",
+            {"num_tools": len(tools), "toolkits": toolkit_hints, "tool_slugs": tool_slugs},
+            node_id=node_id,
         )
 
-        convo: List[Dict[str, Any]] = []
-        if system_rendered:
-            convo.append({"role": "system", "content": system_rendered + "\nAvailable tools:\n" + str(tool_instructions) + "\n" + react_instructions})
-        convo.extend(rendered_messages)
-
-        trace: List[Dict[str, Any]] = []
-
-        api_key = settings.OPENAI_API_KEY
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY is required for agent.react execution")
-
-        client = AsyncOpenAI(api_key=api_key)
+        # Create and run the OpenAI Agent with Composio tools
         try:
-            observation: Optional[str] = None
-            for step in range(1, max_steps + 1):
-                if observation is not None:
-                    convo.append({"role": "user", "content": f"Observation: {observation}"})
-                    observation = None
+            from agents import Agent, Runner  # type: ignore
+        except Exception as ex:
+            raise ValueError(f"OpenAI Agents SDK not available: {ex}")
 
+        agent = Agent(
+            name="Agent",
+            instructions=str(system),
+            model=s.get("model") or "gpt-5",
+            tools=tools,
+        )
+
+        try:
+            result = await Runner.run(starting_agent=agent, input=str(prompt_single))
+        except Exception as ex:
+            await ctx.logger("agent.react(openai_agents): run error", {"error": str(ex)}, node_id=node_id)
+            raise
+
+        final_text = getattr(result, "final_output", None)
+        if not isinstance(final_text, str):
+            try:
+                final_text = json.dumps(final_text, ensure_ascii=False)
+            except Exception:
+                final_text = str(final_text)
+
+        await ctx.logger("agent.react(openai_agents): final", {"final_preview": (final_text or "")[:300]}, node_id=node_id)
+        return AgentReactOutput(final=final_text or "", trace=[{"provider": "openai_agents", "toolkits": toolkit_hints, "tool_slugs": tool_slugs}]).model_dump()
+
+    async def _run_internal_tools_react(self, system: str, prompt: str, tool_nodes: List[Dict[str, Any]], agent_input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
+        """Fallback ReAct loop to support non-Composio local tools (e.g., tool.calculator)."""
+        model = (self.settings.get("model") or "gpt-4o-mini")
+        temperature = float(self.settings.get("temperature", 1))
+        max_steps = int(self.settings.get("max_steps", 6))
+        node_id = agent_input.get("node_id")
+        upstream_ctx = agent_input.get("upstream") or {}
+
+        # Build tools_spec from tool_nodes
+        tools_spec: List[Dict[str, Any]] = []
+        for t in tool_nodes:
+            name = t.get("name") or t.get("id") or t.get("type")
+            tools_spec.append({"name": str(name), "type": t.get("type"), "settings": t.get("settings") or {}})
+
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        try:
+            messages: List[Dict[str, Any]] = []
+            if system:
+                messages.append({"role": "system", "content": system + "\nUse tools when needed. Reply with ReAct format."})
+            messages.append({"role": "user", "content": str(prompt)})
+
+            for step in range(1, max_steps + 1):
                 completion = await client.chat.completions.create(
                     model=model,
-                    messages=convo,
+                    messages=messages,
                     temperature=temperature,
                 )
                 msg = completion.choices[0].message.content or ""
-                trace.append({"step": step, "assistant": msg})
-                await ctx.logger(
-                    f"agent.react: step {step}",
-                    {"assistant_msg_preview": msg[:1000]},
-                    node_id=node_id,
-                )
+                await ctx.logger("agent.react(fallback): step", {"step": step, "assistant_preview": msg[:300]}, node_id=node_id)
 
                 final_match = re.search(r"Final Answer:\s*(.*)", msg, re.IGNORECASE | re.DOTALL)
                 if final_match:
                     final_text = final_match.group(1).strip()
-                    return AgentReactOutput(final=final_text, trace=trace).model_dump()
+                    return AgentReactOutput(final=final_text, trace=[{"step": step}]).model_dump()
 
                 action_match = re.search(r"Action:\s*([^\n]+)\nAction Input:\s*(.*)", msg, re.IGNORECASE | re.DOTALL)
                 if action_match:
@@ -205,21 +198,35 @@ class AgentReactBlock(Block):
                     except Exception:
                         tool_input = raw_input
 
-                    try:
-                        result = await call_tool(tool_name, tool_input)
-                        observation = json.dumps(result, ensure_ascii=False)
-                    except Exception as ex:
-                        observation = f"Tool {tool_name} error: {ex}"
+                    spec = next((t for t in tools_spec if t.get("name") == tool_name), None)
+                    if not spec:
+                        messages.append({"role": "user", "content": f"Observation: Unknown tool {tool_name}"})
+                        continue
+                    block_type = spec.get("type")
+                    base_settings = spec.get("settings") or {}
+                    merged_settings = dict(base_settings)
+                    if isinstance(tool_input, dict):
+                        merged_settings.update(tool_input)
+                    else:
+                        if "expression" in base_settings or str(block_type).endswith("calculator"):
+                            merged_settings["expression"] = str(tool_input)
+                        else:
+                            merged_settings["input"] = tool_input
 
-                    convo.append({"role": "user", "content": f"Observation: {observation}"})
+                    tool_run_input: Dict[str, Any] = {
+                        "settings": merged_settings,
+                        "upstream": upstream_ctx,
+                        "trigger": agent_input.get("trigger") or {},
+                        "node_id": f"{node_id}::tool::{tool_name}",
+                    }
+                    await ctx.logger("agent.react(fallback): invoking tool", {"tool": tool_name}, node_id=node_id)
+                    result = await run_block(block_type, tool_run_input, ctx)
+                    obs = json.dumps(result, ensure_ascii=False) if not isinstance(result, str) else result
+                    messages.append({"role": "user", "content": f"Observation: {obs}"})
                     continue
 
-                convo.append({"role": "user", "content": "Please provide Final Answer."})
+                messages.append({"role": "user", "content": "Please provide Final Answer."})
 
-            return AgentReactOutput(final="Failed to reach a final answer within max_steps.", trace=trace).model_dump()
+            return AgentReactOutput(final="Failed to reach a final answer within max_steps.", trace=[]).model_dump()
         finally:
-            await client.close()
-
-    async def _run_block(self, type_name: str, input: Dict[str, Any], ctx: RunContext) -> Any:
-        from ..registry import run_block
-        return await run_block(type_name, input, ctx)  # type: ignore[return-value] 
+            await client.close() 
