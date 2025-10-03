@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from sqlalchemy import JSON, Enum, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, Enum, ForeignKey, Index, String, Text, Integer, DateTime
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -85,6 +85,29 @@ class Log(Base):
 
     __table_args__ = (
         Index("ix_logs_run_id_ts", "run_id", "ts"),
+    )
+
+
+class FileAsset(Base):
+    __tablename__ = "file_assets"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage: Mapped[str] = mapped_column(String(32), default="supabase", nullable=False)
+    bucket: Mapped[str] = mapped_column(String(255), nullable=False)
+    path: Mapped[str] = mapped_column(String(2048), nullable=False)
+    content_type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    signed_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    signed_url_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    public_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+
+    run: Mapped[Run] = relationship("Run")
+
+    __table_args__ = (
+        Index("ix_file_assets_run_id_node_id", "run_id", "node_id", unique=False),
     )
 
 

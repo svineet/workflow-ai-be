@@ -39,5 +39,14 @@ class Settings:
         # Frontend base URL for redirects to SPA routes
         self.FRONTEND_BASE_URL: str | None = os.getenv("FRONTEND_BASE_URL")
 
+        # Supabase (optional, used for File Save & media)
+        self.SUPABASE_URL: str | None = os.getenv("SUPABASE_URL")
+        self.SUPABASE_SERVICE_KEY: str | None = os.getenv("SUPABASE_SERVICE_KEY")
+        self.SUPABASE_STORAGE_BUCKET: str | None = os.getenv("SUPABASE_STORAGE_BUCKET")
+        try:
+            self.SUPABASE_SIGNED_URL_EXPIRES_SECS: int = int(os.getenv("SUPABASE_SIGNED_URL_EXPIRES_SECS", "3600"))
+        except Exception:
+            self.SUPABASE_SIGNED_URL_EXPIRES_SECS = 3600
+
 
 settings = Settings()
