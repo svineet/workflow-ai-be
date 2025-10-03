@@ -17,3 +17,4 @@ Jinja2
 composio
 composio_openai_agents
 openai-agents
+supabase

@@ -9,6 +9,11 @@ import re
 from jinja2 import Environment, StrictUndefined
 
 from ..services.gcs import GCSWriter
+try:
+    # Avoid hard dependency at import time
+    from ..services.supabase_storage import SupabaseStorage
+except Exception:  # pragma: no cover - optional import in environments without supabase
+    SupabaseStorage = object  # type: ignore[misc,assignment]
 
 
 @dataclass
@@ -16,6 +21,8 @@ class RunContext:
     gcs: GCSWriter
     http: httpx.AsyncClient
     logger: Callable[[str, Dict[str, Any] | None, str | None], Awaitable[None]]
+    supabase: Optional[SupabaseStorage]
+    run_id: int
 
 
 class Block:

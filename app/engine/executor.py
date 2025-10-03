@@ -12,6 +12,7 @@ from ..blocks.registry import run_block
 from ..db.models import Run, Workflow, NodeRun
 from ..engine.graph import toposort, build_parent_child_maps
 from ..services.gcs import GCSWriter
+from ..services.supabase_storage import SupabaseStorage, SupabaseNotConfigured
 from ..services.http import create_http_client
 from .logging import insert_log
 
@@ -57,11 +58,19 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
         # Shared context resources
         http_client = create_http_client()
         gcs = GCSWriter(bucket_name=gcs_bucket) if gcs_bucket else GCSWriter()
+        # Initialize Supabase if configured; remain None otherwise
+        supabase: SupabaseStorage | None
+        try:
+            supabase = SupabaseStorage()
+            # Ensure we can access config; do not force client creation yet
+            _ = supabase.bucket  # may raise if not configured
+        except Exception:
+            supabase = None
 
         async def logger(message: str, data: Dict[str, Any] | None = None, node_id: str | None = None) -> None:
             await insert_log(session, run.id, message, node_id=node_id, data=data)
 
-        ctx = RunContext(gcs=gcs, http=http_client, logger=logger)
+        ctx = RunContext(gcs=gcs, http=http_client, logger=logger, supabase=supabase, run_id=run.id)
 
         try:
             for node_id in order:
@@ -75,11 +84,35 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
                 await logger(f"Starting node {node.id}", node_id=node.id)
 
                 upstream_outputs = {pid: outputs[pid] for pid in parents_map.get(node.id, []) if pid in outputs}
+                # Aggregate FileRefs from upstream into a top-level convenience field
+                aggregated_files: list[dict] = []
+                files_by_parent: Dict[str, list[dict]] = {}
+                try:
+                    for pid, out in upstream_outputs.items():
+                        if isinstance(out, dict) and isinstance(out.get("files"), list):
+                            lst = []
+                            for item in out.get("files"):
+                                if isinstance(item, dict):
+                                    lst.append(item)
+                                else:
+                                    try:
+                                        # Try to coerce into a serializable form
+                                        lst.append(dict(item))  # type: ignore[arg-type]
+                                    except Exception:
+                                        pass
+                            if lst:
+                                files_by_parent[pid] = lst
+                                aggregated_files.extend(lst)
+                except Exception:
+                    pass
+
                 node_input: Dict[str, Any] = {
                     "settings": getattr(node, "settings", {}) or {},
                     "upstream": upstream_outputs,
                     "trigger": run.trigger_payload_json,
                     "node_id": node.id,
+                    "files": aggregated_files,
+                    "files_by_parent": files_by_parent,
                 }
 
                 # If this is an agent node and we have tool edges, inject derived tools for runtime
