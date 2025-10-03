@@ -72,6 +72,27 @@ SLEEP_GRAPH: Dict[str, Any] = {
 }
 
 
+# Sample: Save inline small PNG to storage, then show image
+FILE_SAVE_AND_SHOW: Dict[str, Any] = {
+    "nodes": [
+        {
+            "id": "fs",
+            "type": "file.save",
+            "settings": {
+                "path": "samples/seed.png",
+                # a 1x1 png, data URL form
+                "content": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9W3c6kQAAAAASUVORK5CYII=",
+                "content_type": "image/png",
+            },
+        },
+        {"id": "show", "type": "show.image", "settings": {"title": "Seed Image"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "fs", "to": "show"},
+    ],
+}
+
+
 AGENT_CALC_GRAPH: Dict[str, Any] = {
     "nodes": [
         {"id": "start", "type": "start", "settings": {"payload": {"query": "(12 + 7) * 3"}}},
@@ -173,6 +194,12 @@ async def seed_db(session: AsyncSession) -> None:
                 "webhook_slug": None,
                 "graph_json": COMPOSIO_GMAIL_EMAIL_GRAPH,
             },
+            {
+                "name": "File Save + Show Image",
+                "description": "Save a tiny PNG in storage and display it",
+                "webhook_slug": None,
+                "graph_json": FILE_SAVE_AND_SHOW,
+            },
         ],
     )
 
@@ -201,7 +228,7 @@ async def main() -> None:
         async with session.begin():
             await seed_db(session)
         await session.commit()
-    print("Seeded 5 workflows.")
+    print("Seeded 6 workflows.")
 
 
 if __name__ == "__main__":
