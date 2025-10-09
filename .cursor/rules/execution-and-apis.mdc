@@ -1,0 +1,41 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+## Execution Flow
+
+- **Run creation**: `POST /workflows/{id}/run` schedules background execution via [app/engine/orchestrator.py](mdc:app/engine/orchestrator.py) → `create_and_start_run()`.
+- **Executor**: [app/engine/executor.py](mdc:app/engine/executor.py)
+  - Loads `Workflow.graph_json` into [Graph](mdc:app/schemas/graph.py) and builds parent/child maps ignoring `tool` edges.
+  - Prepares `RunContext` with GCS and HTTP clients and a DB-backed `logger`.
+  - Traverses nodes in a ready-queue order; persists `NodeRun` status, inputs, outputs; updates `Run` status on completion/failure.
+  - Special handling:
+    - Types starting with `tool.` are skipped by the main loop (invoked by agents as tools).
+- **Agents & tools**: [app/blocks/std/agent_react.py](mdc:app/blocks/std/agent_react.py)
+  - Tool edges connect tool blocks to agents (edge.kind=`tool`).
+  - Server normalizes agent tool settings in `_validate_and_normalize_agent_tools()` ([app/server/api.py](mdc:app/server/api.py)).
+
+## API Overview (FastAPI)
+
+Implemented in [app/server/api.py](mdc:app/server/api.py).
+
+- `GET /workflows` — List workflows (id, name, description, webhook_slug, created_at)
+- `POST /workflows` — Create workflow
+  - Body: `{ name, description?, webhook_slug?, graph }` (`graph` uses [app/schemas/graph.py](mdc:app/schemas/graph.py))
+- `GET /workflows/{workflow_id}` — Get workflow by id
+- `PUT /workflows/{workflow_id}` — Update workflow (name/description/webhook_slug/graph)
+- `DELETE /workflows/{workflow_id}` — Delete workflow
+- `POST /validate-graph` — Validate a graph (topology, node refs)
+- `POST /workflows/{workflow_id}/run` — Start a run
+  - Body: optional `{ start_input }` matching [app/schemas/run.py](mdc:app/schemas/run.py)
+- `GET /runs` — List runs (filters: workflow_id, status; cursor pagination via `limit` and `before_id`)
+- `GET /runs/{run_id}` — Get run detail (status, timestamps, outputs_json, current_node_id)
+- `GET /runs/{run_id}/logs` — List run logs (ordered asc; optional `after_id`)
+- `GET /runs/{run_id}/stream` — Server-Sent Events stream of logs and node status events
+
+## Settings & Services
+
+- Settings in [app/server/settings.py](mdc:app/server/settings.py): `DATABASE_URL`, `OPENAI_API_KEY`, `COMPOSIO_API_KEY`, `COMPOSIO_TOOLKITS`, `CORS_ORIGINS`, `FRONTEND_BASE_URL`, etc.
+- Services: HTTP client ([app/services/http.py](mdc:app/services/http.py)), GCS writer ([app/services/gcs.py](mdc:app/services/gcs.py)), Composio client ([app/services/composio.py](mdc:app/services/composio.py)).
+

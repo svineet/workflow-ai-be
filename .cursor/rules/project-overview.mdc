@@ -1,0 +1,65 @@
+---
+alwaysApply: true
+---
+## Workflow AI Backend — Overview & Architecture
+
+- **Purpose**: Orchestrates node-based workflows (graphs) composed of reusable blocks, with runs executed asynchronously and fully logged.
+- **Runtime**: FastAPI app exposing workflow CRUD and run APIs; background executor processes runs and logs node activity.
+
+### Entry points
+- **App init**: [app/server/main.py](mdc:app/server/main.py) sets up FastAPI, routes, CORS, health check, and auto-creates tables on startup.
+- **API router**: [app/server/api.py](mdc:app/server/api.py) defines endpoints for workflows, validation, runs, logs, and SSE stream.
+
+### Blocks system
+- **Base class**: [app/blocks/base.py](mdc:app/blocks/base.py)
+  - `Block` defines `run(input, ctx)`, optional `before/after`, and helpers: `settings_model`, `output_model`, `render_expression` (Jinja2 with upstream + extra context).
+  - `RunContext` provides `gcs`, `http` client, and async `logger`.
+- **Registration**: [app/blocks/registry.py](mdc:app/blocks/registry.py)
+  - `@register(type_name)` decorator registers a block class.
+  - `run_block(type, input, ctx)` instantiates the class and calls `run`.
+  - `list_block_specs()` derives settings/output JSON schemas and required vs. advanced fields from Pydantic models.
+- **Auto-import**: [app/blocks/__init__.py](mdc:app/blocks/__init__.py) imports executors and std blocks to populate the registry at app startup.
+
+### Graph model
+- **Schema**: [app/schemas/graph.py](mdc:app/schemas/graph.py)
+  - `Graph` contains `nodes: List[Node]` and `edges: List[Edge]`.
+  - `Edge.kind` controls semantics: `control` participates in scheduling; `tool` is ignored by scheduler (used to connect tools to agents).
+  - `Edge.route` supports labels like `body`, `done`, `out` for special flow blocks.
+  - Validation includes unique node IDs, endpoint existence, and acyclicity via toposort (ignoring tool edges).
+
+### Execution model
+- **Kickoff**: [app/engine/orchestrator.py](mdc:app/engine/orchestrator.py) creates a `Run` for a `Workflow` and schedules background execution.
+- **Executor loop**: [app/engine/executor.py](mdc:app/engine/executor.py)
+  - Builds parent/child maps ignoring `tool` edges via [app/engine/graph.py](mdc:app/engine/graph.py).
+  - Initializes `RunContext` with `GCSWriter` and HTTP client.
+  - Topological-like traversal with queue; logs "Starting/Finished" per node and persists NodeRun rows and outputs.
+  - Special cases:
+    - `flow.loop`: fans out over items to execute body children with virtual node IDs, then releases `done` route.
+    - `flow.barrier`: releases its `out` route when ready.
+    - Nodes with type starting `tool.` are skipped by the main executor (they are invoked by agents as tools).
+- **Logging**: [app/engine/logging.py](mdc:app/engine/logging.py) inserts structured logs consumed by APIs.
+
+### Agents and tools
+- **Agent block**: [app/blocks/std/agent_react.py](mdc:app/blocks/std/agent_react.py)
+  - Kind: `agent`. Accepts tool connections via a `tools` connector in `extras()`.
+  - Supports Composio OpenAI Agents when Composio tools are connected; otherwise falls back to an internal ReAct-style loop.
+  - Tool edges (edge.kind = `tool`) connect tool blocks to agents without affecting control flow scheduling.
+- **Tool-compatibility**: Blocks may mark `tool_compatible = True` or return `{"toolCompatible": true}` from `extras()` (e.g., `tool.calculator`, `tool.composio`).
+- **Server-side validation**: Agent tool lists in workflow settings are validated and normalized in `_validate_and_normalize_agent_tools()` within [app/server/api.py](mdc:app/server/api.py).
+
+### Settings & configuration
+- **Settings**: [app/server/settings.py](mdc:app/server/settings.py)
+  - `DATABASE_URL`: SQLAlchemy async URI (default local Postgres).
+  - `GCS_BUCKET`: optional target bucket for `GCSWriter`.
+  - `PORT`: server port.
+  - `OPENAI_API_KEY`: enables LLM features.
+  - `COMPOSIO_API_KEY`, `COMPOSIO_TOOLKITS`, `COMPOSIO_AUTH_CONFIGS`: Composio tool execution and auth configuration.
+  - `CORS_ORIGINS`, `FRONTEND_BASE_URL`.
+- **Services**: HTTP client builder in [app/services/http.py](mdc:app/services/http.py), GCS writer in [app/services/gcs.py](mdc:app/services/gcs.py), Composio in [app/services/composio.py](mdc:app/services/composio.py).
+
+### Adding a new block
+1) Create a class extending `Block` with `settings_model` and `output_model` in `app/blocks/...`.
+2) Decorate with `@register("your.type")`.
+3) Import or place it under a module pulled in by [app/blocks/__init__.py](mdc:app/blocks/__init__.py).
+4) Use it in a graph node with matching `type` and validated `settings`.
+

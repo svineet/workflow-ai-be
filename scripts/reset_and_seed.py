@@ -38,7 +38,7 @@ WEATHER_GRAPH: Dict[str, Any] = {
         {
             "id": "n3",
             "type": "show",
-            "settings": {"title": "LLM Summary"},
+            "settings": {"template": "LLM Summary"},
         },
     ],
     "edges": [
@@ -51,7 +51,7 @@ WEATHER_GRAPH: Dict[str, Any] = {
 MINIMAL_GRAPH: Dict[str, Any] = {
     "nodes": [
         {"id": "s", "type": "start", "settings": {"payload": {"hello": "world"}}},
-        {"id": "show", "type": "show", "settings": {"title": "Hello"}},
+        {"id": "show", "type": "show", "settings": {"template": "Hello"}},
     ],
     "edges": [
         {"id": "e1", "from": "s", "to": "show"},
@@ -103,11 +103,13 @@ COMPOSIO_GMAIL_EMAIL_GRAPH: Dict[str, Any] = {
             "id": "agent",
             "type": "agent.react",
             "settings": {
-                "system": "You are a witty assistant. Create a short, family‑friendly, funny one‑liner about coding.",
-                "prompt": "Write a short funny one‑liner about coding in Python.",
+                "system": "You are a helpful assistant, with tools. ",
+                "prompt": "Write a short funny one‑liner about coding in Python. Send it to saivineet89@gmail.com.\n Don't ask. Just frame and send. Also what tools do you have access to?",
+                "tools": [],
                 "model": "gpt-5",
-                "temperature": 1.0,
+                "temperature": 1,
                 "max_steps": 3,
+                "timeout_seconds": 60
             },
         },
         {
@@ -129,6 +131,34 @@ COMPOSIO_GMAIL_EMAIL_GRAPH: Dict[str, Any] = {
         {"id": "t1", "from": "agent", "to": "email", "kind": "tool"}
     ],
 }
+
+
+AUDIO_TTS_GRAPH: Dict[str, Any] = {
+    "nodes": [
+        {"id": "s", "type": "start", "settings": {"payload": {"text": "Hello from Workflow AI"}}},
+        {"id": "tts", "type": "audio.tts", "settings": {"text": "{{ s.text }}", "voice": "alloy", "format": "mp3"}},
+        {"id": "play", "type": "ui.audio", "settings": {"file": "{{ tts.media }}", "title": "TTS Output"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "s", "to": "tts"},
+        {"id": "e2", "from": "tts", "to": "play"},
+    ],
+}
+
+
+AUDIO_STT_GRAPH: Dict[str, Any] = {
+    "nodes": [
+        {"id": "s", "type": "start", "settings": {"payload": {"url": "https://file-examples.com/storage/fe9f4e6f0c7e1/audio.mp3"}}},
+        {"id": "stt", "type": "audio.stt", "settings": {"media": "{{ s.url }}"}},
+        {"id": "show", "type": "show", "settings": {"template": "Transcribed: {{ upstream.stt.text }}"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "s", "to": "stt"},
+        {"id": "e2", "from": "stt", "to": "show"},
+    ],
+}
+
+
 
 
 async def clear_db(session: AsyncSession) -> None:
@@ -173,6 +203,18 @@ async def seed_db(session: AsyncSession) -> None:
                 "webhook_slug": None,
                 "graph_json": COMPOSIO_GMAIL_EMAIL_GRAPH,
             },
+            {
+                "name": "Audio TTS → UI Audio",
+                "description": "Synthesize speech and render as audio",
+                "webhook_slug": None,
+                "graph_json": AUDIO_TTS_GRAPH,
+            },
+            {
+                "name": "Audio STT → Show",
+                "description": "Transcribe a remote audio file and show text",
+                "webhook_slug": None,
+                "graph_json": AUDIO_STT_GRAPH,
+            },
         ],
     )
 
@@ -201,7 +243,7 @@ async def main() -> None:
         async with session.begin():
             await seed_db(session)
         await session.commit()
-    print("Seeded 5 workflows.")
+    print("Seeded 7 workflows.")
 
 
 if __name__ == "__main__":

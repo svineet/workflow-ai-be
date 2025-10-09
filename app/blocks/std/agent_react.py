@@ -71,7 +71,7 @@ class AgentReactBlock(Block):
             node_id=node_id,
         )
 
-        # Build toolkits and composio tool slugs from tool edges (agent -> tool.*)
+        # Gather tools from edges
         derived_tools = input.get("__derived_tools_from_edges__") or []
         toolkit_hints: List[str] = []
         tool_slugs: List[str] = []
@@ -99,28 +99,49 @@ class AgentReactBlock(Block):
         if composio_agents is None:
             raise ValueError("Composio OpenAI Agents provider is not available. Ensure composio-openai-agents is installed and COMPOSIO_API_KEY is set.")
 
-        # Fetch Composio tools by toolkits and by specific slugs, then merge (docs: combinations are exclusive)
+        # Fetch Composio tools by toolkits and by specific slugs, then merge
         tools: List[Dict[str, Any]] = []
         try:
             if toolkit_hints:
                 tk_tools = composio_agents.tools.get(user_id="system-user", toolkits=toolkit_hints)
                 if isinstance(tk_tools, list):
                     tools.extend(tk_tools)
+                await ctx.logger(
+                    "agent.react(openai_agents): fetched tools by toolkits",
+                    {"count": len(tk_tools) if isinstance(tk_tools, list) else 0, "toolkits": toolkit_hints},
+                    node_id=node_id,
+                )
             if tool_slugs:
                 slug_tools = composio_agents.tools.get(user_id="system-user", tools=tool_slugs)
                 if isinstance(slug_tools, list):
                     tools.extend(slug_tools)
-            # If nothing fetched but we have neither hints nor slugs, fall back to env-configured toolkits
+                # Log a summary only; avoid serializing tool objects
+                await ctx.logger(
+                    "agent.react(openai_agents): fetched tools by slugs",
+                    {"count": len(slug_tools) if isinstance(slug_tools, list) else 0, "slugs": tool_slugs},
+                    node_id=node_id,
+                )
+            # If nothing fetched and no hints/slugs, fall back to env-configured toolkits
             if not tools and not (toolkit_hints or tool_slugs):
                 env_tools = composio_agents.tools.get(user_id="system-user", toolkits=settings.COMPOSIO_TOOLKITS)
                 if isinstance(env_tools, list):
                     tools.extend(env_tools)
+                await ctx.logger(
+                    "agent.react(openai_agents): fetched tools from env toolkits",
+                    {"count": len(env_tools) if isinstance(env_tools, list) else 0, "toolkits": settings.COMPOSIO_TOOLKITS},
+                    node_id=node_id,
+                )
         except Exception as ex:
-            await ctx.logger("agent.react(openai_agents): failed to load tools", {"error": str(ex)}, node_id=node_id)
+            await ctx.logger(
+                "agent.react(openai_agents): failed to load tools",
+                {"error": str(ex), "toolkits": toolkit_hints, "slugs": tool_slugs},
+                node_id=node_id,
+            )
             tools = []
 
+        # Final summary (avoid logging raw tool objects)
         await ctx.logger(
-            "agent.react(openai_agents): tools prepared",
+            f"agent.react(openai_agents): tools prepared\n Tools: {len(tools)}\n Toolkits: {toolkit_hints}\n Tool slugs: {tool_slugs}",
             {"num_tools": len(tools), "toolkits": toolkit_hints, "tool_slugs": tool_slugs},
             node_id=node_id,
         )
@@ -151,7 +172,6 @@ class AgentReactBlock(Block):
             except Exception:
                 final_text = str(final_text)
 
-        await ctx.logger("agent.react(openai_agents): final", {"final_preview": (final_text or "")[:300]}, node_id=node_id)
         return AgentReactOutput(final=final_text or "", trace=[{"provider": "openai_agents", "toolkits": toolkit_hints, "tool_slugs": tool_slugs}]).model_dump()
 
     async def _run_internal_tools_react(self, system: str, prompt: str, tool_nodes: List[Dict[str, Any]], agent_input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
@@ -169,12 +189,11 @@ class AgentReactBlock(Block):
             tools_spec.append({"name": str(name), "type": t.get("type"), "settings": t.get("settings") or {}})
 
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        messages: List[Dict[str, Any]] = []
+        if system:
+            messages.append({"role": "system", "content": system + "\nUse tools when needed. Reply with ReAct format."})
+        messages.append({"role": "user", "content": str(prompt)})
         try:
-            messages: List[Dict[str, Any]] = []
-            if system:
-                messages.append({"role": "system", "content": system + "\nUse tools when needed. Reply with ReAct format."})
-            messages.append({"role": "user", "content": str(prompt)})
-
             for step in range(1, max_steps + 1):
                 completion = await client.chat.completions.create(
                     model=model,
@@ -182,13 +201,10 @@ class AgentReactBlock(Block):
                     temperature=temperature,
                 )
                 msg = completion.choices[0].message.content or ""
-                await ctx.logger("agent.react(fallback): step", {"step": step, "assistant_preview": msg[:300]}, node_id=node_id)
-
                 final_match = re.search(r"Final Answer:\s*(.*)", msg, re.IGNORECASE | re.DOTALL)
                 if final_match:
                     final_text = final_match.group(1).strip()
                     return AgentReactOutput(final=final_text, trace=[{"step": step}]).model_dump()
-
                 action_match = re.search(r"Action:\s*([^\n]+)\nAction Input:\s*(.*)", msg, re.IGNORECASE | re.DOTALL)
                 if action_match:
                     tool_name = action_match.group(1).strip()
@@ -197,7 +213,6 @@ class AgentReactBlock(Block):
                         tool_input = json.loads(raw_input)
                     except Exception:
                         tool_input = raw_input
-
                     spec = next((t for t in tools_spec if t.get("name") == tool_name), None)
                     if not spec:
                         messages.append({"role": "user", "content": f"Observation: Unknown tool {tool_name}"})
@@ -212,21 +227,17 @@ class AgentReactBlock(Block):
                             merged_settings["expression"] = str(tool_input)
                         else:
                             merged_settings["input"] = tool_input
-
                     tool_run_input: Dict[str, Any] = {
                         "settings": merged_settings,
                         "upstream": upstream_ctx,
                         "trigger": agent_input.get("trigger") or {},
                         "node_id": f"{node_id}::tool::{tool_name}",
                     }
-                    await ctx.logger("agent.react(fallback): invoking tool", {"tool": tool_name}, node_id=node_id)
                     result = await run_block(block_type, tool_run_input, ctx)
                     obs = json.dumps(result, ensure_ascii=False) if not isinstance(result, str) else result
                     messages.append({"role": "user", "content": f"Observation: {obs}"})
                     continue
-
                 messages.append({"role": "user", "content": "Please provide Final Answer."})
-
             return AgentReactOutput(final="Failed to reach a final answer within max_steps.", trace=[]).model_dump()
         finally:
             await client.close() 

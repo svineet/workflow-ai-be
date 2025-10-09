@@ -25,7 +25,7 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
         await _mark_run_running(session, run.id)
         await session.commit()
 
-        # Build graph and topo order from workflow.graph_json
+        # Build graph and topo order
         from ..schemas.graph import Graph
 
         graph = Graph.model_validate(run.workflow.graph_json)
@@ -34,25 +34,13 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
 
         outputs: Dict[str, Dict[str, Any]] = {}
 
-        # Precompute agent -> tool specs from tool edges
-        node_by_id: Dict[str, Any] = {n.id: n for n in graph.nodes}
-        tool_edges = [e for e in graph.edges if getattr(e, "kind", "control") == "tool"]
-        agent_id_to_tools: Dict[str, list[Dict[str, Any]]] = {}
-        for e in tool_edges:
-            agent_node = node_by_id.get(e.from_node)
-            tool_node = node_by_id.get(e.to)
-            if not agent_node or not tool_node:
-                continue
-            # Only attach tools to agent.kind nodes
-            # We cannot import the class here easily; rely on type prefix convention
-            if not (str(agent_node.type).startswith("agent.")):
-                continue
-            agent_tools = agent_id_to_tools.setdefault(agent_node.id, [])
-            agent_tools.append({
-                "name": tool_node.id,
-                "type": tool_node.type,
-                "settings": getattr(tool_node, "settings", {}) or {},
-            })
+        # Map tool edges per agent node
+        tool_children: Dict[str, Dict[str, Any]] = {}
+        for e in graph.edges:
+            if getattr(e, "kind", "control") == "tool":
+                if e.from_node not in tool_children:
+                    tool_children[e.from_node] = []
+                tool_children[e.from_node].append(e.to)
 
         # Shared context resources
         http_client = create_http_client()
@@ -67,7 +55,7 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
             for node_id in order:
                 node = next(n for n in graph.nodes if n.id == node_id)
 
-                # Skip execution of tool nodes; these are invoked by agents via tool edges
+                # Skip tool nodes
                 if str(node.type).startswith("tool."):
                     await logger(f"Skipping tool node {node.id} in main execution (invoked via agent tools)", node_id=node.id)
                     continue
@@ -82,11 +70,21 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
                     "node_id": node.id,
                 }
 
-                # If this is an agent node and we have tool edges, inject derived tools for runtime
-                if str(node.type).startswith("agent."):
-                    derived_tools = agent_id_to_tools.get(node.id)
-                    if derived_tools:
-                        node_input["__derived_tools_from_edges__"] = derived_tools
+                # Attach derived tools for agent nodes
+                if str(node.type).startswith("agent.") and tool_children.get(node.id):
+                    derived_tools = []
+                    for tool_node_id in tool_children.get(node.id, []):
+                        tnode = next((n for n in graph.nodes if n.id == tool_node_id), None)
+                        if tnode is None:
+                            continue
+                        tsettings = getattr(tnode, "settings", {}) or {}
+                        derived_tools.append({
+                            "id": getattr(tnode, "id", tool_node_id),
+                            "name": tsettings.get("name") or getattr(tnode, "id", tool_node_id),
+                            "type": getattr(tnode, "type", ""),
+                            "settings": tsettings,
+                        })
+                    node_input["__derived_tools_from_edges__"] = derived_tools
 
                 await _mark_node_status(session, run.id, node.id, node.type, status="running")
                 await session.commit()
@@ -97,7 +95,6 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
                     await session.commit()
                     await logger(f"Finished node {node.id}", node_id=node.id)
                 except Exception as ex:
-                    print("EXEC ERROR:", repr(ex))
                     await _persist_node_error(session, run.id, node.id, node.type, node_input, ex)
                     await session.commit()
                     await logger(f"Node {node.id} failed: {ex}", {"error": str(ex)}, node_id=node.id)

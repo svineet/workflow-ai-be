@@ -84,12 +84,20 @@ class ComposioToolBlock(Block):
                 account_id = row.connected_account_id if row is not None else None
 
         if not account_id:
+            await ctx.logger(
+                f"tool.composio: No connected account found for toolkit {toolkit}. Authorize via Integrations.",
+                {"toolkit": toolkit, "error": "No connected account"},
+                node_id=input.get("node_id"),
+            )
             raise ValueError(f"No connected account found for toolkit {toolkit}. Authorize via Integrations.")
-
         client = get_composio_client()
         resp: Any
         if client is None:
-            # Placeholder without SDK; echo result
+            await ctx.logger(
+                f"tool.composio: Composio SDK not available; cannot execute {tool_slug}",
+                {"toolkit": toolkit, "tool_slug": tool_slug, "args_preview": str(args)[:500], "error": "Composio SDK not available"},
+                node_id=node_id,
+            )
             resp = {"ok": True, "echo": {"tool_slug": tool_slug, "args": args}}
         else:
             try:

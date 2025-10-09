@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-# Import std blocks to populate registry on module load
-from .std import start, http_request, gcs_write, llm_simple, show, web_get, agent_react  # noqa: F401
-
-# Import class-based executors (stubs for now)
-from . import executors  # noqa: F401
+# noqa: F401
+from .executors import *
+from .std import *
+from .std.audio_tts import *
+from .std.audio_stt import *
+from .std.ui_audio import *
+from .std.media import *

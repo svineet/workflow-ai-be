@@ -1,0 +1,33 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+## Blocks Catalog
+
+Below are the registered blocks (type → brief description). Click any file to view source.
+
+- `start` — Start node returns provided payload or trigger payload ([app/blocks/std/start.py](mdc:app/blocks/std/start.py))
+- `show` — Display input data in the UI; terminal sink block ([app/blocks/std/show.py](mdc:app/blocks/std/show.py))
+- `http.request` — Perform an HTTP request and return status, headers, data ([app/blocks/std/http_request.py](mdc:app/blocks/std/http_request.py))
+- `web.get` — HTTP request with parsed outputs: status, headers, data_text/data_json ([app/blocks/std/web_get.py](mdc:app/blocks/std/web_get.py))
+- `gcs.write` — Write content to a GCS object and return URI and size ([app/blocks/std/gcs_write.py](mdc:app/blocks/std/gcs_write.py))
+- `llm.simple` — Generate text using OpenAI; falls back to uppercase when no API key ([app/blocks/std/llm_simple.py](mdc:app/blocks/std/llm_simple.py))
+- `agent.react` (kind: agent) — Agent that uses Composio OpenAI Agents or internal ReAct with tools ([app/blocks/std/agent_react.py](mdc:app/blocks/std/agent_react.py))
+
+Executors / utilities:
+- `transform.uppercase` — Convert a text string to uppercase ([app/blocks/executors/uppercase.py](mdc:app/blocks/executors/uppercase.py))
+- `transform.template` — Render a simple template by replacing `{{keys}}` with values ([app/blocks/executors/template.py](mdc:app/blocks/executors/template.py))
+- `json.get` — Extract a nested value from JSON by path ([app/blocks/executors/json_get.py](mdc:app/blocks/executors/json_get.py))
+- `math.add` — Add two numbers ([app/blocks/executors/math_add.py](mdc:app/blocks/executors/math_add.py))
+- `util.sleep` — Asynchronously sleep for N seconds ([app/blocks/executors/sleep.py](mdc:app/blocks/executors/sleep.py))
+- `control.branch` — Evaluate an expression against context and output a boolean ([app/blocks/executors/branch.py](mdc:app/blocks/executors/branch.py))
+
+Tool-compatible blocks:
+- `tool.calculator` — Calculator tool: evaluate basic arithmetic expressions ([app/blocks/executors/calculator.py](mdc:app/blocks/executors/calculator.py))
+- `tool.composio` — Execute a Composio tool using a connected account ([app/blocks/executors/composio_tool.py](mdc:app/blocks/executors/composio_tool.py))
+
+Notes:
+- Blocks can expose additional UI/graph integration via `extras()` and mark tool support with `tool_compatible = True`.
+- The registry is populated by imports in [app/blocks/__init__.py](mdc:app/blocks/__init__.py).
+
