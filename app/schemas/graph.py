@@ -5,10 +5,16 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
+class Position(BaseModel):
+    x: float
+    y: float
+
+
 class Node(BaseModel):
     id: str
     type: str
     settings: Dict = Field(default_factory=dict)
+    position: Optional[Position] = Field(default=None, description="Optional UI canvas coordinates")
 
 
 class Edge(BaseModel):

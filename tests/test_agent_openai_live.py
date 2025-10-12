@@ -6,9 +6,31 @@ import time
 import pytest
 
 try:
-    from dotenv import load_dotenv
-except Exception:  # pragma: no cover - dotenv might not be installed in some envs
-    load_dotenv = None  # type: ignore
+    from dotenv import load_dotenv  # type: ignore
+except Exception:  # pragma: no cover
+    load_dotenv = None
+
+
+def _agent_calc_graph() -> dict:
+    return {
+        "nodes": [
+            {
+                "id": "agent",
+                "type": "agent.react",
+                "settings": {
+                    "system": "You are a math assistant. Use the calculator tool when needed.",
+                    "prompt": "What is 2 + 2?",
+                    "model": "gpt-4o",
+                    "temperature": 1,
+                    "max_steps": 3,
+                },
+            },
+            {"id": "calc", "type": "tool.calculator", "settings": {}},
+        ],
+        "edges": [
+            {"id": "t1", "from": "agent", "to": "calc", "kind": "tool"},
+        ],
+    }
 
 
 @pytest.mark.slow
@@ -26,27 +48,7 @@ def test_agent_with_openai_live(client):  # uses session client/DB, but sets Ope
 
     settings.OPENAI_API_KEY = api_key
 
-    # Create a simple agent workflow; keep temperature low for determinism and small tokens
-    graph = {
-        "nodes": [
-            {
-                "id": "agent",
-                "type": "agent.react",
-                "settings": {
-                    "system": "You are a math assistant. Use the calculator tool when needed.",
-                    "prompt": "What is 2 + 2?",
-                    "model": "gpt-4o-mini",
-                    "temperature": 0.0,
-                    "max_steps": 3,
-                    "tools": [
-                        {"name": "calculator", "type": "tool.calculator", "settings": {}}
-                    ],
-                },
-            },
-        ],
-        "edges": [],
-    }
-
+    graph = _agent_calc_graph()
     r = client.post("/workflows", json={"name": "AgentCalcLive", "graph": graph})
     assert r.status_code == 200
     wf_id = r.json()["id"]

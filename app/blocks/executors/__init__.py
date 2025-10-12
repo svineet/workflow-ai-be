@@ -8,3 +8,6 @@ from . import math_add  # noqa: F401
 from . import sleep  # noqa: F401
 from . import calculator  # noqa: F401
 from . import composio_tool  # noqa: F401 
+from . import http_tool  # noqa: F401
+from . import websearch_tool  # noqa: F401
+from . import codeinterpreter_tool  # noqa: F401

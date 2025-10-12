@@ -17,13 +17,13 @@ def _graph_agent_calc() -> Dict[str, Any]:
                     "model": "gpt-5",
                     "temperature": 1,
                     "max_steps": 3,
-                    "tools": [
-                        {"name": "calculator", "type": "tool.calculator", "settings": {"expression": "(12+7)*3"}}
-                    ],
                 },
             },
+            {"id": "calc", "type": "tool.calculator", "settings": {}},
         ],
-        "edges": [],
+        "edges": [
+            {"id": "t1", "from": "agent", "to": "calc", "kind": "tool"}
+        ],
     }
 
 

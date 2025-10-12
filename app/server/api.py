@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+from collections import OrderedDict
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -16,11 +17,13 @@ from ..schemas.graph import Graph
 from ..schemas.run import RunCreate
 from ..engine.orchestrator import create_and_start_run
 from ..server.settings import settings
+from ..services.assistant import create_workflow_from_prompt
 from ..services.composio import get_composio_client
 from starlette.responses import StreamingResponse, RedirectResponse
 import asyncio
 import json
 import secrets
+import re
 
 router = APIRouter()
 
@@ -134,6 +137,49 @@ def _validate_and_normalize_agent_tools(graph: Graph) -> Dict[str, Any]:
         node["settings"] = settings
 
     return gdict
+
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    # Try direct JSON first
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # Try code fence ```json ... ```
+    fence = re.search(r"```json\s*([\s\S]*?)```", text, re.IGNORECASE)
+    if fence:
+        candidate = fence.group(1).strip()
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+    # Try first balanced brace substring
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start : end + 1]
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+    raise ValueError("Unable to extract JSON graph from model output")
+
+
+class AssistantNewBody(BaseModel):
+    prompt: str
+    model: Optional[str] = None
+
+
+@router.post("/assistant/new")
+async def assistant_new(body: AssistantNewBody, session: AsyncSession = Depends(get_session)):
+    try:
+        new_id, cached = await create_workflow_from_prompt(session, body.prompt, body.model)
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
+    resp: Dict[str, Any] = {"id": new_id}
+    if cached:
+        resp["cached"] = True
+    return resp
 
 
 @router.get("/workflows")

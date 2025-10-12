@@ -59,15 +59,27 @@ class AgentReactBlock(Block):
 
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
         s = self.settings
-        system = s.get("system") or "You are a helpful assistant. Use tools when needed."
+        system_raw = s.get("system") or "You are a helpful assistant. Use tools when needed."
         prompt_single: Optional[str] = s.get("prompt")
         if prompt_single is None or not str(prompt_single).strip():
             raise ValueError("agent.react requires 'prompt'")
 
+        # Render Jinja templates for system and prompt using upstream + extra context
+        upstream_ctx = input.get("upstream") or {}
+        extra_ctx = {"settings": s, "trigger": input.get("trigger") or {}, "upstream": upstream_ctx}
+        try:
+            system = self.render_expression(str(system_raw), upstream=upstream_ctx, extra=extra_ctx)
+        except Exception:
+            system = str(system_raw)
+        try:
+            rendered_prompt = self.render_expression(str(prompt_single), upstream=upstream_ctx, extra=extra_ctx)
+        except Exception:
+            rendered_prompt = str(prompt_single)
+
         node_id = input.get("node_id")
         await ctx.logger(
             "agent.react(openai_agents): start",
-            {"model": s.get("model") or "gpt-4o-mini", "temperature": float(s.get("temperature", 1))},
+            {"model": s.get("model") or "gpt-4o-mini", "temperature": float(s.get("temperature", 1)), "prompt_preview": str(rendered_prompt)[:200]},
             node_id=node_id,
         )
 
@@ -91,53 +103,150 @@ class AgentReactBlock(Block):
             except Exception:
                 pass
 
-        # If we have any non-Composio tools (e.g. tool.calculator), fallback to internal ReAct loop for those
-        if non_composio_tools:
-            return await self._run_internal_tools_react(system, prompt_single, non_composio_tools, input, ctx)
-
-        composio_agents = get_composio_openai_agents_client()
-        if composio_agents is None:
-            raise ValueError("Composio OpenAI Agents provider is not available. Ensure composio-openai-agents is installed and COMPOSIO_API_KEY is set.")
-
         # Fetch Composio tools by toolkits and by specific slugs, then merge
-        tools: List[Dict[str, Any]] = []
-        try:
-            if toolkit_hints:
-                tk_tools = composio_agents.tools.get(user_id="system-user", toolkits=toolkit_hints)
-                if isinstance(tk_tools, list):
-                    tools.extend(tk_tools)
+        tools: List[Any] = []
+        if toolkit_hints or tool_slugs:
+            composio_agents = get_composio_openai_agents_client()
+            if composio_agents is None:
+                raise ValueError("Composio OpenAI Agents provider is not available. Ensure composio-openai-agents is installed and COMPOSIO_API_KEY is set.")
+            try:
+                if toolkit_hints:
+                    tk_tools = composio_agents.tools.get(user_id="system-user", toolkits=toolkit_hints)
+                    if isinstance(tk_tools, list):
+                        tools.extend(tk_tools)
+                    await ctx.logger(
+                        "agent.react(openai_agents): fetched tools by toolkits",
+                        {"count": len(tk_tools) if isinstance(tk_tools, list) else 0, "toolkits": toolkit_hints},
+                        node_id=node_id,
+                    )
+                if tool_slugs:
+                    slug_tools = composio_agents.tools.get(user_id="system-user", tools=tool_slugs)
+                    if isinstance(slug_tools, list):
+                        tools.extend(slug_tools)
+                    await ctx.logger(
+                        "agent.react(openai_agents): fetched tools by slugs",
+                        {"count": len(slug_tools) if isinstance(slug_tools, list) else 0, "slugs": tool_slugs},
+                        node_id=node_id,
+                    )
+                if not tools and not (toolkit_hints or tool_slugs):
+                    env_tools = composio_agents.tools.get(user_id="system-user", toolkits=settings.COMPOSIO_TOOLKITS)
+                    if isinstance(env_tools, list):
+                        tools.extend(env_tools)
+                    await ctx.logger(
+                        "agent.react(openai_agents): fetched tools from env toolkits",
+                        {"count": len(env_tools) if isinstance(env_tools, list) else 0, "toolkits": settings.COMPOSIO_TOOLKITS},
+                        node_id=node_id,
+                    )
+            except Exception as ex:
                 await ctx.logger(
-                    "agent.react(openai_agents): fetched tools by toolkits",
-                    {"count": len(tk_tools) if isinstance(tk_tools, list) else 0, "toolkits": toolkit_hints},
+                    "agent.react(openai_agents): failed to load tools",
+                    {"error": str(ex), "toolkits": toolkit_hints, "slugs": tool_slugs},
                     node_id=node_id,
                 )
-            if tool_slugs:
-                slug_tools = composio_agents.tools.get(user_id="system-user", tools=tool_slugs)
-                if isinstance(slug_tools, list):
-                    tools.extend(slug_tools)
-                # Log a summary only; avoid serializing tool objects
-                await ctx.logger(
-                    "agent.react(openai_agents): fetched tools by slugs",
-                    {"count": len(slug_tools) if isinstance(slug_tools, list) else 0, "slugs": tool_slugs},
-                    node_id=node_id,
+                tools = []
+
+        # Convert non-Composio tool nodes to Agents SDK tools
+        if non_composio_tools:
+            try:
+                from agents import FunctionTool, WebSearchTool, CodeInterpreterTool  # type: ignore
+            except Exception as ex:
+                await ctx.logger("agent.react(openai_agents): failed to import tool classes", {"error": str(ex)}, node_id=node_id)
+                # Fallback to internal ReAct for non-Composio if Agents SDK tools unavailable
+                return await self._run_internal_tools_react(system, rendered_prompt, non_composio_tools, input, ctx)
+
+            # Define function tools mapping
+            def build_calculator_tool() -> Any:
+                async def on_invoke(ctx_wrap, args_json: str) -> str:  # type: ignore
+                    try:
+                        data = json.loads(args_json) if args_json else {}
+                    except Exception:
+                        data = {"expression": args_json}
+                    if not isinstance(data, dict):
+                        data = {"expression": str(data)}
+                    merged_settings = {"expression": data.get("expression")}
+                    tool_run_input: Dict[str, Any] = {
+                        "settings": merged_settings,
+                        "upstream": input.get("upstream") or {},
+                        "trigger": input.get("trigger") or {},
+                        "node_id": f"{node_id}::tool::calculator",
+                    }
+                    result = await run_block("tool.calculator", tool_run_input, ctx)
+                    return json.dumps(result, ensure_ascii=False)
+
+                schema = {
+                    "title": "calculator_args",
+                    "type": "object",
+                    "properties": {"expression": {"type": "string", "description": "Arithmetic expression"}},
+                    "required": ["expression"],
+                }
+
+                return FunctionTool(
+                    name="calculator",
+                    description="Evaluate arithmetic expressions",
+                    params_json_schema=schema,
+                    on_invoke_tool=on_invoke,
                 )
-            # If nothing fetched and no hints/slugs, fall back to env-configured toolkits
-            if not tools and not (toolkit_hints or tool_slugs):
-                env_tools = composio_agents.tools.get(user_id="system-user", toolkits=settings.COMPOSIO_TOOLKITS)
-                if isinstance(env_tools, list):
-                    tools.extend(env_tools)
-                await ctx.logger(
-                    "agent.react(openai_agents): fetched tools from env toolkits",
-                    {"count": len(env_tools) if isinstance(env_tools, list) else 0, "toolkits": settings.COMPOSIO_TOOLKITS},
-                    node_id=node_id,
+
+            def build_http_tool() -> Any:
+                async def on_invoke(ctx_wrap, args_json: str) -> str:  # type: ignore
+                    # Expect args_json to match http.request settings (method,url,headers,body,...)
+                    try:
+                        settings_in = json.loads(args_json) if args_json else {}
+                    except Exception:
+                        settings_in = {}
+                    tool_run_input: Dict[str, Any] = {
+                        "settings": settings_in,
+                        "upstream": input.get("upstream") or {},
+                        "trigger": input.get("trigger") or {},
+                        "node_id": f"{node_id}::tool::http_request",
+                    }
+                    result = await run_block("http.request", tool_run_input, ctx)
+                    return json.dumps(result, ensure_ascii=False)
+
+                params = {
+                    "title": "http_request_args",
+                    "type": "object",
+                    "properties": {
+                        "method": {"type": "string"},
+                        "url": {"type": "string"},
+                        "headers": {"type": "object"},
+                        "body": {"type": ["string", "object", "null"]},
+                        "timeout_seconds": {"type": ["number", "null"]},
+                    },
+                    "required": ["url"],
+                }
+                return FunctionTool(
+                    name="http_request",
+                    description="Perform an HTTP request and return status, headers, data",
+                    params_json_schema=params,
+                    on_invoke_tool=on_invoke,
                 )
-        except Exception as ex:
-            await ctx.logger(
-                "agent.react(openai_agents): failed to load tools",
-                {"error": str(ex), "toolkits": toolkit_hints, "slugs": tool_slugs},
-                node_id=node_id,
-            )
-            tools = []
+
+            # Hosted tools
+            def build_websearch_tool() -> Any:
+                return WebSearchTool()
+
+            def build_code_interpreter_tool() -> Any:
+                return CodeInterpreterTool()
+
+            # From non_composio_tools list, attach corresponding tool instances
+            type_to_builder = {
+                "tool.calculator": build_calculator_tool,
+                "tool.http_request": build_http_tool,
+                "tool.websearch": build_websearch_tool,
+                "tool.code_interpreter": build_code_interpreter_tool,
+            }
+
+            for t in non_composio_tools:
+                t_type = str(t.get("type") or "")
+                builder = type_to_builder.get(t_type)
+                if builder is None:
+                    continue
+                try:
+                    tool_obj = builder()
+                    tools.append(tool_obj)
+                except Exception as ex:
+                    await ctx.logger("agent.react(openai_agents): failed to build tool", {"type": t_type, "error": str(ex)}, node_id=node_id)
 
         # Final summary (avoid logging raw tool objects)
         await ctx.logger(
@@ -146,21 +255,27 @@ class AgentReactBlock(Block):
             node_id=node_id,
         )
 
-        # Create and run the OpenAI Agent with Composio tools
+        # Create and run the OpenAI Agent with assembled tools
         try:
             from agents import Agent, Runner  # type: ignore
         except Exception as ex:
             raise ValueError(f"OpenAI Agents SDK not available: {ex}")
 
+        def _choose_agents_model(name: Optional[str]) -> str:
+            candidate = (name or "").strip() or "gpt-4o-mini"
+            if candidate.lower().startswith("gpt-5"):
+                return "gpt-4o-mini"
+            return candidate
+
         agent = Agent(
             name="Agent",
             instructions=str(system),
-            model=s.get("model") or "gpt-5",
+            model=_choose_agents_model(s.get("model")),
             tools=tools,
         )
 
         try:
-            result = await Runner.run(starting_agent=agent, input=str(prompt_single))
+            result = await Runner.run(starting_agent=agent, input=str(rendered_prompt))
         except Exception as ex:
             await ctx.logger("agent.react(openai_agents): run error", {"error": str(ex)}, node_id=node_id)
             raise
