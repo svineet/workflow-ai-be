@@ -17,7 +17,7 @@ from ..schemas.graph import Graph
 from ..schemas.run import RunCreate
 from ..engine.orchestrator import create_and_start_run
 from ..server.settings import settings
-from ..services.assistant import create_workflow_from_prompt
+from ..services.assistant import create_workflow_from_prompt, stream_graph_from_prompt
 from ..services.composio import get_composio_client
 from starlette.responses import StreamingResponse, RedirectResponse
 import asyncio
@@ -180,6 +180,18 @@ async def assistant_new(body: AssistantNewBody, session: AsyncSession = Depends(
     if cached:
         resp["cached"] = True
     return resp
+
+
+@router.post("/assistant/new/stream")
+async def assistant_new_stream(body: AssistantNewBody, session: AsyncSession = Depends(get_session)):
+    async def event_gen():
+        async for chunk in stream_graph_from_prompt(session, body.prompt, body.model):
+            try:
+                yield f"data: {json.dumps(chunk)}\n\n"
+            except Exception:
+                yield f"data: {json.dumps({'type':'error','message':'serialization_failed'})}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @router.get("/workflows")

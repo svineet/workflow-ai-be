@@ -349,6 +349,98 @@ async def _generate_graph_from_prompt(prompt: str, model: Optional[str]) -> Dict
         return fallback_graph
 
 
+async def stream_graph_from_prompt(session: AsyncSession, prompt: str, model: Optional[str]):
+    """Async generator that streams agent events and yields JSON envelopes for SSE.
+
+    Yields dicts with keys: type, data
+    Types:
+      - status {stage}
+      - agent_event {preview}
+      - final_graph {graph}
+      - workflow_created {id}
+      - error {message}
+    """
+    # Start
+    yield {"type": "status", "stage": "starting"}
+    if not settings.OPENAI_API_KEY:
+        yield {"type": "error", "message": "OPENAI_API_KEY missing"}
+        return
+
+    try:
+        from agents import Agent, Runner, WebSearchTool, ItemHelpers  # type: ignore
+        from openai.types.responses import ResponseTextDeltaEvent
+    except Exception as ex:
+        yield {"type": "error", "message": f"Agents SDK unavailable: {ex}"}
+        return
+
+    sys_prompt = _assistant_system_prompt()
+    chosen_model = (model or "gpt-5")
+    tools = [WebSearchTool()]
+    agent = Agent(name="WorkflowDesigner", instructions=sys_prompt, model=chosen_model, tools=tools)
+
+    # Stream agent run
+    final_text_chunks: List[str] = []
+    final_text_from_item: Optional[str] = None
+    try:
+        result = Runner.run_streamed(starting_agent=agent, input=prompt)
+        async for evt in result.stream_events():
+            try:
+                if evt.type == "raw_response_event":
+                    if isinstance(evt.data, ResponseTextDeltaEvent):
+                        delta = evt.data.delta
+                        if delta:
+                            final_text_chunks.append(delta)
+                            yield {"type": "agent_event", "preview": delta}
+                elif evt.type == "run_item_stream_event":
+                    if evt.item.type == "message_output_item":
+                        final_text_from_item = ItemHelpers.text_message_output(evt.item)
+                        yield {"type": "agent_event", "preview": "Agent thought..."}
+                    elif evt.item.type == "tool_call_item":
+                        tool_name = getattr(evt.item, "name", "tool")
+                        yield {"type": "agent_event", "preview": f"Calling tool: `{tool_name}`..."}
+                    elif evt.item.type == "tool_call_output_item":
+                        yield {"type": "agent_event", "preview": "Tool call finished."}
+            except Exception:
+                # Ignore serialization issues; keep streaming
+                pass
+    except Exception as ex:
+        yield {"type": "error", "message": f"agent_stream_error: {ex}"}
+        return
+
+    # Produce final graph
+    final_text = final_text_from_item if final_text_from_item is not None else "".join(final_text_chunks).strip()
+    if not final_text:
+        # Fallback to non‑stream generation in worst case
+        graph = await _generate_graph_from_prompt(prompt, model)
+    else:
+        try:
+            graph = _extract_json_object(final_text)
+        except Exception:
+            graph = await _generate_graph_from_prompt(prompt, model)
+
+    try:
+        graph_obj = Graph.model_validate(graph)
+        gdict = _normalize_agent_tools(graph_obj.model_dump(by_alias=True))
+    except Exception as ex:
+        yield {"type": "error", "message": f"graph_validation_failed: {ex}"}
+        return
+
+    yield {"type": "final_graph", "graph": gdict}
+
+    # Persist workflow
+    try:
+        # Cheap title/description
+        name = (prompt[:60] + ("…" if len(prompt) > 60 else "")).strip()
+        description = f"Seeded from assistant: {prompt[:200]}".strip()
+        result = await session.execute(
+            insert(Workflow).values(name=name or "Assistant workflow", description=description, webhook_slug=None, graph_json=gdict)
+        )
+        await session.commit()
+        workflow_id = int(result.inserted_primary_key[0])
+        yield {"type": "workflow_created", "id": workflow_id}
+    except Exception as ex:
+        yield {"type": "error", "message": f"persist_failed: {ex}"}
+
 def _is_tool_compatible(type_name: str) -> bool:
     from ..blocks.registry import get_block_class
 
