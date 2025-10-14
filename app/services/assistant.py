@@ -7,6 +7,7 @@ from collections import OrderedDict
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+import openai
 from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,7 @@ from ..server.settings import settings
 from ..db.models import Workflow
 
 
+CACHE_ENABLED = True
 _ASSISTANT_LRU_CAPACITY = 64
 _assistant_cache: OrderedDict[str, int] = OrderedDict()
 _assistant_cache_lock = asyncio.Lock()
@@ -63,7 +65,7 @@ Block catalog (compact):
     system?: string,
     prompt?: string,            # optional extra instruction merged with system; you may also inline everything into messages if you prefer
     tools?: [{ name:string, type:string, settings?:object }],  # usually Composio tools exposed to the agent
-    model?: string (default gpt-4o-mini),
+    model?: string (default gpt-5),
     temperature?: number,
     max_steps?: integer (default 8),
     timeout_seconds?: number (default 60)
@@ -92,6 +94,7 @@ These are the tools that the agent can use. Connect them to `agent.react` with a
     timeout_seconds?: number
   }
   Prefer specifying a concrete `tool_slug`. Skipping `tool_slug` may expose an entire toolkit; avoid unless necessary.
+  IF YOU KNOW THE TOOL SLUG, USE IT, AND DO NOT FILL THE TOOLKIT PARAMETER.
 
 - tool.calculator — Evaluate a basic arithmetic expression
 - tool.http_request — Perform an HTTP request via the backend
@@ -101,9 +104,15 @@ These are the tools that the agent can use. Connect them to `agent.react` with a
 
 Design guidelines:
 - Use agent.react for any task requiring reasoning or multiple steps; include the minimum necessary tool access in settings.tools (e.g., "tool.composio" with a specific tool_slug).
-- For web lookups, prefer web.get; use http.request only when required.
+- Feel free to compose agents together, using specialised agents for smaller tasks/steps. Example: Research agent -> Email agent.
+- Prefer agents with web search attached as a tool, over simple web.get or HTTP request blocks.
+- Prompting: Agent prompts shoudl indicate what actions are expected of the agent. Tell it to execute what you need it to do.
 - For audio previews, chain llm/simple text -> audio.tts -> ui.audio (or show).
 - Keep settings small and explicit; do not invent fields not in the catalog.
+- DO NOT HALLUCINATE URLS for web.get or http.request blocks. Instead make agents, they will do the reasoning,
+and discovery of the data themselves.
+- Email agents should be prompted to send emails in HTML, not markdown.
+- Show block renders markdown.
 
 To Remember:
 - To access data from a block, we must have an edge going out from the previous block to the block we want to access the data from.
@@ -112,8 +121,13 @@ To Remember:
 and the agent node will call the tool. Avoid templates for tool nodes if possible.
 - If confused about a composio tool, web search to find the tool slug. In general, all integrations are exposed as tools in Composio, like Slack, Gmail, GCalendar, etc.
 
-Return JSON only. No comments, no markdown, no backticks.
+Reflection step:
+- Once generated, reflect on the graph and make sure it is correct.
+- Connect edges according to data usage.
+- Verify the templating and settings, and tools for agent blocks.
+- Make sure all agents have required tools attached to them, according to their prompt.
 
+Finally, return JSON only for the final workflow. No comments, no markdown, no backticks.
 
 ### Examples
 
@@ -126,7 +140,7 @@ Return JSON only. No comments, no markdown, no backticks.
     { "id": "agent", "type": "agent.react", "settings": {
       "system": "You write a single‑line programming joke.",
       "prompt": "Write a short, clean one‑liner programming joke.",
-      "model": "gpt-4o-mini"
+      "model": "gpt-5-mini"
     }},
     { "id": "email", "type": "tool.composio", "settings": {
       "toolkit": "GMAIL",
@@ -195,7 +209,7 @@ Return JSON only. No comments, no markdown, no backticks.
     { "id": "agent", "type": "agent.react", "settings": {
       "system": "You craft a short friendly announcement with emojis.",
       "prompt": "Announce: Workflow AI backend has new seed workflows! Keep under 25 words. Post it to Slack in any channel. Report what you did.",
-      "model": "gpt-4o-mini"
+      "model": "gpt-5"
     }},
     { "id": "slack", "type": "tool.composio", "settings": {
       "toolkit": "SLACK",
@@ -222,7 +236,7 @@ Return JSON only. No comments, no markdown, no backticks.
     { "id": "agent", "type": "agent.react", "settings": {
       "system": "You convert details into a calendar description.",
       "prompt": "Create a one‑sentence description for the meeting title {{ start.data.title }}.",
-      "model": "gpt-4o-mini"
+      "model": "gpt-5"
     }},
     { "id": "gcal", "type": "tool.composio", "settings": {
       "toolkit": "GOOGLECALENDAR",
@@ -284,7 +298,7 @@ async def _generate_graph_from_prompt(prompt: str, model: Optional[str]) -> Dict
     }
     logger.info(
         "assistant.generate: starting OpenAI call",
-        extra={"model": model or "gpt-5", "prompt_preview": (prompt or "")[:200]},
+        extra={"model": model or "gpt-4o-mini", "prompt_preview": (prompt or "")[:200]},
     )
 
     if not settings.OPENAI_API_KEY:
@@ -397,22 +411,66 @@ async def create_workflow_from_prompt(session: AsyncSession, prompt: str, model:
 
     async with _assistant_cache_lock:
         cached = _assistant_cache.get(prompt_key)
-        if cached is not None:
+        if cached is not None and CACHE_ENABLED:
             _assistant_cache.move_to_end(prompt_key)
             logger.info("assistant.create: cache hit", extra={"workflow_id": int(cached)})
+            await asyncio.sleep(5)
+
             return int(cached), True
 
-    raw_graph = await _generate_graph_from_prompt(prompt, model)
+
+    async def _summarise_prompt_with_openai(prompt: str) -> Tuple[str, str]:
+        """Best-effort summarization for name/description. Must not fail the request."""
+        try:
+            client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            resp = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Given a user input describing a workflow, return a JSON object with keys 'title' (<=5 words) and 'description' (one sentence)."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=120,
+            )
+            raw = getattr(resp.choices[0].message, "content", None)
+            data = json.loads(raw) if isinstance(raw, str) else {}
+            title = str((data or {}).get("title") or "").strip()
+            description = str((data or {}).get("description") or "").strip()
+            if not title:
+                title = (prompt[:60] + ("…" if len(prompt) > 60 else "")).strip()
+            if not description:
+                description = f"Seeded from assistant: {prompt[:200]}".strip()
+            return title, description
+        except Exception:
+            # Never fail the whole operation due to naming; fallback
+            title = (prompt[:60] + ("…" if len(prompt) > 60 else "")).strip()
+            description = f"Seeded from assistant: {prompt[:200]}".strip()
+            return title, description
+
+    # Run both graph generation and title/description summarization in parallel
+    raw_graph_task = asyncio.create_task(_generate_graph_from_prompt(prompt, model))
+    summary_task = asyncio.create_task(_summarise_prompt_with_openai(prompt))
+
+    raw_graph, (name, description) = await asyncio.gather(raw_graph_task, summary_task, return_exceptions=True)
+    description = description or f"Seeded from assistant: {prompt_key[:200]}".strip()
     logger.info(
         "assistant.create: raw graph generated",
         extra={"num_nodes": len((raw_graph or {}).get("nodes", [])), "num_edges": len((raw_graph or {}).get("edges", []))},
     )
+
     graph_obj = Graph.model_validate(raw_graph)
     gdict = _normalize_agent_tools(graph_obj.model_dump(by_alias=True))
 
-    name = (prompt_key[:60] + ("…" if len(prompt_key) > 60 else "")).strip()
-    description = f"Seeded from assistant: {prompt_key[:200]}".strip()
-    stmt = insert(Workflow).values(name=name or "Assistant workflow", description=description, webhook_slug=None, graph_json=gdict)
+    stmt = insert(Workflow).values(
+        name=name or "Assistant workflow",
+        description=description,
+        webhook_slug=None,
+        graph_json=gdict,
+    )
     result = await session.execute(stmt)
     await session.commit()
     new_id = int(result.inserted_primary_key[0])

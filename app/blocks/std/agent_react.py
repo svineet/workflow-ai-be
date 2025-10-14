@@ -206,12 +206,32 @@ class AgentReactBlock(Block):
                 params = {
                     "title": "http_request_args",
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
-                        "method": {"type": "string"},
-                        "url": {"type": "string"},
-                        "headers": {"type": "object"},
-                        "body": {"type": ["string", "object", "null"]},
-                        "timeout_seconds": {"type": ["number", "null"]},
+                        "method": {
+                            "type": "string",
+                            "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+                            "description": "HTTP method"
+                        },
+                        "url": {"type": "string", "description": "Request URL"},
+                        "headers": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                            "description": "HTTP headers (string values)"
+                        },
+                        "body": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "object", "additionalProperties": False},
+                                {"type": "null"}
+                            ],
+                            "description": "Request body as string or JSON object"
+                        },
+                        "timeout_seconds": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Optional timeout in seconds"
+                        },
                     },
                     "required": ["url"],
                 }
