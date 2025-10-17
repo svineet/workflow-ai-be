@@ -11,6 +11,7 @@ from ..registry import register, run_block
 from ..base import Block, RunContext
 from ...server.settings import settings
 from ...services.composio import get_composio_openai_agents_client
+from ...services.tool_builder import build_openai_tools
 
 
 class AgentToolSpec(BaseModel):
@@ -147,126 +148,7 @@ class AgentReactBlock(Block):
 
         # Convert non-Composio tool nodes to Agents SDK tools
         if non_composio_tools:
-            try:
-                from agents import FunctionTool, WebSearchTool, CodeInterpreterTool  # type: ignore
-            except Exception as ex:
-                await ctx.logger("agent.react(openai_agents): failed to import tool classes", {"error": str(ex)}, node_id=node_id)
-                # Fallback to internal ReAct for non-Composio if Agents SDK tools unavailable
-                return await self._run_internal_tools_react(system, rendered_prompt, non_composio_tools, input, ctx)
-
-            # Define function tools mapping
-            def build_calculator_tool() -> Any:
-                async def on_invoke(ctx_wrap, args_json: str) -> str:  # type: ignore
-                    try:
-                        data = json.loads(args_json) if args_json else {}
-                    except Exception:
-                        data = {"expression": args_json}
-                    if not isinstance(data, dict):
-                        data = {"expression": str(data)}
-                    merged_settings = {"expression": data.get("expression")}
-                    tool_run_input: Dict[str, Any] = {
-                        "settings": merged_settings,
-                        "upstream": input.get("upstream") or {},
-                        "trigger": input.get("trigger") or {},
-                        "node_id": f"{node_id}::tool::calculator",
-                    }
-                    result = await run_block("tool.calculator", tool_run_input, ctx)
-                    return json.dumps(result, ensure_ascii=False)
-
-                schema = {
-                    "title": "calculator_args",
-                    "type": "object",
-                    "properties": {"expression": {"type": "string", "description": "Arithmetic expression"}},
-                    "required": ["expression"],
-                }
-
-                return FunctionTool(
-                    name="calculator",
-                    description="Evaluate arithmetic expressions",
-                    params_json_schema=schema,
-                    on_invoke_tool=on_invoke,
-                )
-
-            def build_http_tool() -> Any:
-                async def on_invoke(ctx_wrap, args_json: str) -> str:  # type: ignore
-                    # Expect args_json to match http.request settings (method,url,headers,body,...)
-                    try:
-                        settings_in = json.loads(args_json) if args_json else {}
-                    except Exception:
-                        settings_in = {}
-                    tool_run_input: Dict[str, Any] = {
-                        "settings": settings_in,
-                        "upstream": input.get("upstream") or {},
-                        "trigger": input.get("trigger") or {},
-                        "node_id": f"{node_id}::tool::http_request",
-                    }
-                    result = await run_block("http.request", tool_run_input, ctx)
-                    return json.dumps(result, ensure_ascii=False)
-
-                params = {
-                    "title": "http_request_args",
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "method": {
-                            "type": "string",
-                            "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
-                            "description": "HTTP method"
-                        },
-                        "url": {"type": "string", "description": "Request URL"},
-                        "headers": {
-                            "type": "object",
-                            "additionalProperties": {"type": "string"},
-                            "description": "HTTP headers (string values)"
-                        },
-                        "body": {
-                            "oneOf": [
-                                {"type": "string"},
-                                {"type": "object", "additionalProperties": False},
-                                {"type": "null"}
-                            ],
-                            "description": "Request body as string or JSON object"
-                        },
-                        "timeout_seconds": {
-                            "type": "number",
-                            "minimum": 0,
-                            "description": "Optional timeout in seconds"
-                        },
-                    },
-                    "required": ["url"],
-                }
-                return FunctionTool(
-                    name="http_request",
-                    description="Perform an HTTP request and return status, headers, data",
-                    params_json_schema=params,
-                    on_invoke_tool=on_invoke,
-                )
-
-            # Hosted tools
-            def build_websearch_tool() -> Any:
-                return WebSearchTool()
-
-            def build_code_interpreter_tool() -> Any:
-                return CodeInterpreterTool()
-
-            # From non_composio_tools list, attach corresponding tool instances
-            type_to_builder = {
-                "tool.calculator": build_calculator_tool,
-                "tool.http_request": build_http_tool,
-                "tool.websearch": build_websearch_tool,
-                "tool.code_interpreter": build_code_interpreter_tool,
-            }
-
-            for t in non_composio_tools:
-                t_type = str(t.get("type") or "")
-                builder = type_to_builder.get(t_type)
-                if builder is None:
-                    continue
-                try:
-                    tool_obj = builder()
-                    tools.append(tool_obj)
-                except Exception as ex:
-                    await ctx.logger("agent.react(openai_agents): failed to build tool", {"type": t_type, "error": str(ex)}, node_id=node_id)
+            tools.extend(await build_openai_tools(non_composio_tools, input, ctx))
 
         # Final summary (avoid logging raw tool objects)
         await ctx.logger(
