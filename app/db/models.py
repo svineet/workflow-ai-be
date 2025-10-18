@@ -12,6 +12,17 @@ class Base(DeclarativeBase):
     pass
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    # Supabase user id (UUID as string)
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    avatar_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+
+
 class RunStatusEnum(str, enum.Enum):
     pending = "pending"
     running = "running"
@@ -23,6 +34,7 @@ class Workflow(Base):
     __tablename__ = "workflows"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     webhook_slug: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True)
@@ -36,6 +48,7 @@ class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
     workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[RunStatusEnum] = mapped_column(Enum(RunStatusEnum), default=RunStatusEnum.pending, nullable=False)
     started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
@@ -75,6 +88,7 @@ class Log(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
     node_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     ts: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
     level: Mapped[str] = mapped_column(String(16), default="info", nullable=False)

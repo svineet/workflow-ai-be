@@ -10,6 +10,7 @@ httpx
 google-cloud-storage
 python-dotenv
 openai
+PyJWT
 alembic
 psycopg[binary]
 pytest

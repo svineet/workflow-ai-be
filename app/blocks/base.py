@@ -16,6 +16,8 @@ class RunContext:
     gcs: GCSWriter
     http: httpx.AsyncClient
     logger: Callable[[str, Dict[str, Any] | None, str | None], Awaitable[None]]
+    user_id: Optional[str] = None
+    run_id: Optional[int] = None
 
 
 class Block:
