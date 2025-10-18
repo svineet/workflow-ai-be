@@ -20,10 +20,13 @@ from ..server.settings import settings
 from ..services.assistant import create_workflow_from_prompt, stream_graph_from_prompt
 from ..services.composio import get_composio_client
 from starlette.responses import StreamingResponse, RedirectResponse
+import os
 import asyncio
 import json
 import secrets
 import re
+import hmac
+import hashlib
 
 router = APIRouter()
 
@@ -34,20 +37,49 @@ async def get_session() -> AsyncSession:
 
 
 def _current_user_id(request: Request) -> str:
-    # TODO: integrate with real auth; for now, single-tenant system user
+    # Read from auth middleware; fallback to single-tenant 'system-user' for tests/dev
+    try:
+        user = getattr(request.state, "user", None)
+        uid = (user or {}).get("id") if isinstance(user, dict) else None
+        if isinstance(uid, str) and uid.strip():
+            return uid.strip()
+    except Exception:
+        pass
     return "system-user"
 
 
 def _sign_state(data: Dict[str, Any]) -> str:
-    # Minimal opaque token; TODO: HMAC sign
-    return json.dumps(data)
+    # Embed HMAC to prevent tampering when APP secret configured
+    from .settings import settings
+    payload = json.dumps(data, separators=(",", ":"), sort_keys=True)
+    secret = getattr(settings, "SUPABASE_JWT_SECRET", None) or getattr(settings, "FRONTEND_BASE_URL", "")
+    # Prefer APP secret env if available; fallback to weak secret in dev
+    app_secret = os.getenv("APP_SECRET") or secret or "dev-secret"
+    sig = hmac.new(app_secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return json.dumps({"d": data, "s": sig})
 
 
 def _parse_state(state: str) -> Dict[str, Any]:
     try:
-        return json.loads(state)
+        obj = json.loads(state)
     except Exception:
         return {}
+    data = obj.get("d") if isinstance(obj, dict) else None
+    sig = obj.get("s") if isinstance(obj, dict) else None
+    if not isinstance(data, dict):
+        return {}
+    try:
+        payload = json.dumps(data, separators=(",", ":"), sort_keys=True)
+        app_secret = os.getenv("APP_SECRET") or os.getenv("SUPABASE_JWT_SECRET") or (settings.FRONTEND_BASE_URL or "dev-secret")
+        calc = hmac.new((app_secret or "dev-secret").encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if sig and hmac.compare_digest(calc, sig):
+            return data
+        # Allow in dev where no sig present
+        if not sig:
+            return data
+    except Exception:
+        pass
+    return {}
 
 
 def _frontend_base_url() -> str:
@@ -171,9 +203,10 @@ class AssistantNewBody(BaseModel):
 
 
 @router.post("/assistant/new")
-async def assistant_new(body: AssistantNewBody, session: AsyncSession = Depends(get_session)):
+async def assistant_new(body: AssistantNewBody, request: Request, session: AsyncSession = Depends(get_session)):
     try:
-        new_id, cached = await create_workflow_from_prompt(session, body.prompt, body.model)
+        user_id = _current_user_id(request)
+        new_id, cached = await create_workflow_from_prompt(session, body.prompt, body.model, user_id=user_id)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex))
     resp: Dict[str, Any] = {"id": new_id}
@@ -183,9 +216,10 @@ async def assistant_new(body: AssistantNewBody, session: AsyncSession = Depends(
 
 
 @router.post("/assistant/new/stream")
-async def assistant_new_stream(body: AssistantNewBody, session: AsyncSession = Depends(get_session)):
+async def assistant_new_stream(body: AssistantNewBody, request: Request, session: AsyncSession = Depends(get_session)):
     async def event_gen():
-        async for chunk in stream_graph_from_prompt(session, body.prompt, body.model):
+        user_id = _current_user_id(request)
+        async for chunk in stream_graph_from_prompt(session, body.prompt, body.model, user_id=user_id):
             try:
                 yield f"data: {json.dumps(chunk)}\n\n"
             except Exception:
@@ -195,8 +229,9 @@ async def assistant_new_stream(body: AssistantNewBody, session: AsyncSession = D
 
 
 @router.get("/workflows")
-async def list_workflows(session: AsyncSession = Depends(get_session)):
-    stmt = select(Workflow).order_by(Workflow.id.asc())
+async def list_workflows(request: Request, session: AsyncSession = Depends(get_session)):
+    user_id = _current_user_id(request)
+    stmt = select(Workflow).where(Workflow.user_id == user_id).order_by(Workflow.id.asc())
     result = await session.execute(stmt)
     rows = result.scalars().all()
     return [
@@ -217,9 +252,11 @@ async def list_runs(
     status: Optional[str] = None,
     limit: Optional[int] = None,
     before_id: Optional[int] = None,
+    request: Request = None,
     session: AsyncSession = Depends(get_session),
 ):
-    stmt = select(Run)
+    user_id = _current_user_id(request)
+    stmt = select(Run).where(Run.user_id == user_id)
     if workflow_id is not None:
         stmt = stmt.where(Run.workflow_id == workflow_id)
     if status is not None:
@@ -273,10 +310,12 @@ async def list_runs(
 
 
 @router.post("/workflows")
-async def create_workflow(body: WorkflowCreate, session: AsyncSession = Depends(get_session)):
+async def create_workflow(body: WorkflowCreate, request: Request, session: AsyncSession = Depends(get_session)):
+    user_id = _current_user_id(request)
     # Validate/normalize agent tools per backend rules
     gdict = _validate_and_normalize_agent_tools(body.graph)
     stmt = insert(Workflow).values(
+        user_id=user_id,
         name=body.name,
         description=body.description,
         webhook_slug=body.webhook_slug,
@@ -288,8 +327,9 @@ async def create_workflow(body: WorkflowCreate, session: AsyncSession = Depends(
 
 
 @router.get("/workflows/{workflow_id}")
-async def get_workflow(workflow_id: int, session: AsyncSession = Depends(get_session)):
-    stmt = select(Workflow).where(Workflow.id == workflow_id)
+async def get_workflow(workflow_id: int, request: Request, session: AsyncSession = Depends(get_session)):
+    user_id = _current_user_id(request)
+    stmt = select(Workflow).where(Workflow.id == workflow_id, Workflow.user_id == user_id)
     result = await session.execute(stmt)
     wf = result.scalar_one_or_none()
     if wf is None:
@@ -305,7 +345,8 @@ async def get_workflow(workflow_id: int, session: AsyncSession = Depends(get_ses
 
 
 @router.put("/workflows/{workflow_id}")
-async def update_workflow(workflow_id: int, body: WorkflowUpdate, session: AsyncSession = Depends(get_session)):
+async def update_workflow(workflow_id: int, body: WorkflowUpdate, request: Request, session: AsyncSession = Depends(get_session)):
+    user_id = _current_user_id(request)
     values: Dict[str, Any] = {}
     if body.name is not None:
         values["name"] = body.name
@@ -319,14 +360,16 @@ async def update_workflow(workflow_id: int, body: WorkflowUpdate, session: Async
     if not values:
         return {"updated": False}
 
-    await session.execute(update(Workflow).where(Workflow.id == workflow_id).values(**values))
+    # Enforce ownership
+    await session.execute(update(Workflow).where(Workflow.id == workflow_id, Workflow.user_id == user_id).values(**values))
     await session.commit()
     return {"updated": True}
 
 
 @router.delete("/workflows/{workflow_id}")
-async def delete_workflow(workflow_id: int, session: AsyncSession = Depends(get_session)):
-    stmt = select(Workflow).where(Workflow.id == workflow_id)
+async def delete_workflow(workflow_id: int, request: Request, session: AsyncSession = Depends(get_session)):
+    user_id = _current_user_id(request)
+    stmt = select(Workflow).where(Workflow.id == workflow_id, Workflow.user_id == user_id)
     result = await session.execute(stmt)
     wf = result.scalar_one_or_none()
     if wf is None:
@@ -347,8 +390,19 @@ async def validate_graph(body: ValidateGraphBody):
 
 
 @router.post("/workflows/{workflow_id}/run")
-async def start_run(workflow_id: int, body: RunCreate | None = None, background_tasks: BackgroundTasks = None):
+async def start_run(
+    workflow_id: int,
+    body: RunCreate | None = None,
+    background_tasks: BackgroundTasks = None,
+    request: Request = None,
+    session: AsyncSession = Depends(get_session),
+):
     background_tasks = background_tasks or BackgroundTasks()
+    # Enforce ownership of workflow
+    user_id = _current_user_id(request)
+    chk = await session.execute(select(Workflow).where(Workflow.id == workflow_id, Workflow.user_id == user_id))
+    if chk.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
     run_id = await create_and_start_run(
         workflow_id,
         trigger_type="manual",
@@ -359,8 +413,9 @@ async def start_run(workflow_id: int, body: RunCreate | None = None, background_
 
 
 @router.get("/runs/{run_id}")
-async def get_run(run_id: int, session: AsyncSession = Depends(get_session)):
-    stmt = select(Run).where(Run.id == run_id)
+async def get_run(run_id: int, request: Request, session: AsyncSession = Depends(get_session)):
+    user_id = _current_user_id(request)
+    stmt = select(Run).where(Run.id == run_id, Run.user_id == user_id)
     result = await session.execute(stmt)
     run = result.scalar_one_or_none()
     if run is None:
@@ -403,7 +458,12 @@ async def get_run(run_id: int, session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/runs/{run_id}/logs")
-async def get_run_logs(run_id: int, after_id: Optional[int] = None, session: AsyncSession = Depends(get_session)):
+async def get_run_logs(run_id: int, after_id: Optional[int] = None, request: Request = None, session: AsyncSession = Depends(get_session)):
+    user_id = _current_user_id(request)
+    # Ensure the run belongs to user
+    rchk = await session.execute(select(Run).where(Run.id == run_id, Run.user_id == user_id))
+    if rchk.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Run not found")
     stmt = select(Log).where(Log.run_id == run_id)
     if after_id is not None:
         stmt = stmt.where(Log.id > after_id)
@@ -425,13 +485,19 @@ async def get_run_logs(run_id: int, after_id: Optional[int] = None, session: Asy
 
 
 @router.get("/runs/{run_id}/stream")
-async def stream_run(run_id: int):
+async def stream_run(run_id: int, request: Request):
     async def event_gen():
         last_id = 0
         last_status: Optional[str] = None
         while True:
             async with SessionFactory() as session:  # type: AsyncSession
                 # first, logs since last id
+                # Check ownership
+                user_id = _current_user_id(request)
+                rchk = await session.execute(select(Run).where(Run.id == run_id, Run.user_id == user_id))
+                if rchk.scalar_one_or_none() is None:
+                    yield f"data: {json.dumps({'type':'status', 'status':'not_found'})}\n\n"
+                    break
                 log_stmt = select(Log).where(Log.run_id == run_id, Log.id > last_id).order_by(Log.id.asc())
                 log_res = await session.execute(log_stmt)
                 new_rows = log_res.scalars().all()
@@ -474,8 +540,8 @@ async def stream_run(run_id: int):
 
 # Alias route to satisfy clients/tests expecting /runs/{run_id}/logs/stream
 @router.get("/runs/{run_id}/logs/stream")
-async def stream_run_logs_alias(run_id: int):
-    return await stream_run(run_id)
+async def stream_run_logs_alias(run_id: int, request: Request):
+    return await stream_run(run_id, request)
 
 
 class HookPayload(BaseModel):
@@ -483,7 +549,7 @@ class HookPayload(BaseModel):
 
 
 @router.post("/hooks/{slug}")
-async def webhook_trigger(slug: str, body: HookPayload, background_tasks: BackgroundTasks = None, session: AsyncSession = Depends(get_session)):
+async def webhook_trigger(slug: str, body: HookPayload, background_tasks: BackgroundTasks = None, request: Request = None, session: AsyncSession = Depends(get_session)):
     background_tasks = background_tasks or BackgroundTasks()
     stmt = select(Workflow).where(Workflow.webhook_slug == slug)
     result = await session.execute(stmt)
@@ -518,7 +584,7 @@ async def composio_authorize(body: ComposioAuthorizeBody, request: Request):
     auth_config_id = settings.COMPOSIO_AUTH_CONFIGS.get(body.toolkit)
     if not auth_config_id:
         raise HTTPException(status_code=400, detail="Unknown toolkit or COMPOSIO_AUTH_CONFIGS missing for requested toolkit")
-    state = _sign_state({"tk": body.toolkit, "nonce": secrets.token_hex(8)})
+    state = _sign_state({"tk": body.toolkit, "nonce": secrets.token_hex(8), "uid": user_id})
     cb = str(request.url_for("composio_callback"))
     try:
         # Prefer hosted connect link for OAuth/API-Key flows
@@ -541,8 +607,9 @@ async def composio_callback(
         raise HTTPException(status_code=400, detail="Composio is not configured. Set COMPOSIO_API_KEY and install composio.")
     if state is None or toolkit is None:
         raise HTTPException(status_code=400, detail="Missing state/toolkit")
-    _ = _parse_state(state)  # keep for future use
-    user_id = "system-user"  # single-tenant for now
+    st = _parse_state(state)
+    # Best-effort: use user id embedded at authorize time; fallback to system-user
+    user_id = (st.get("uid") if isinstance(st, dict) else None) or "system-user"
     # Wait for connection using request id if provided
     connected = None
     if connection_request_id:
@@ -601,8 +668,8 @@ async def composio_callback(
 
 
 @router.get("/integrations/composio/accounts")
-async def list_composio_accounts(toolkit: Optional[str] = None, session: AsyncSession = Depends(get_session)):
-    user_id = "system-user"
+async def list_composio_accounts(toolkit: Optional[str] = None, request: Request = None, session: AsyncSession = Depends(get_session)):
+    user_id = _current_user_id(request)
     stmt = select(ComposioAccount).where(ComposioAccount.user_id == user_id)
     if toolkit:
         stmt = stmt.where(ComposioAccount.toolkit == toolkit)
@@ -621,8 +688,8 @@ async def list_composio_accounts(toolkit: Optional[str] = None, session: AsyncSe
 
 
 @router.get("/integrations")
-async def list_integrations(session: AsyncSession = Depends(get_session)):
-    user_id = "system-user"
+async def list_integrations(request: Request, session: AsyncSession = Depends(get_session)):
+    user_id = _current_user_id(request)
     configured_toolkits = settings.COMPOSIO_TOOLKITS
     # Also include any toolkits that have accounts in DB
     tk_stmt = select(ComposioAccount.toolkit).where(ComposioAccount.user_id == user_id).distinct()

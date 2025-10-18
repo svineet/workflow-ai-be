@@ -349,7 +349,7 @@ async def _generate_graph_from_prompt(prompt: str, model: Optional[str]) -> Dict
         return fallback_graph
 
 
-async def stream_graph_from_prompt(session: AsyncSession, prompt: str, model: Optional[str]):
+async def stream_graph_from_prompt(session: AsyncSession, prompt: str, model: Optional[str], *, user_id: Optional[str] = None):
     """Async generator that streams agent events and yields JSON envelopes for SSE.
 
     Yields dicts with keys: type, data
@@ -432,9 +432,15 @@ async def stream_graph_from_prompt(session: AsyncSession, prompt: str, model: Op
         # Cheap title/description
         name = (prompt[:60] + ("…" if len(prompt) > 60 else "")).strip()
         description = f"Seeded from assistant: {prompt[:200]}".strip()
-        result = await session.execute(
-            insert(Workflow).values(name=name or "Assistant workflow", description=description, webhook_slug=None, graph_json=gdict)
-        )
+        values: Dict[str, Any] = {
+            "name": name or "Assistant workflow",
+            "description": description,
+            "webhook_slug": None,
+            "graph_json": gdict,
+        }
+        if user_id:
+            values["user_id"] = user_id
+        result = await session.execute(insert(Workflow).values(**values))
         await session.commit()
         workflow_id = int(result.inserted_primary_key[0])
         yield {"type": "workflow_created", "id": workflow_id}
@@ -496,7 +502,7 @@ def _normalize_agent_tools(gdict: Dict[str, Any]) -> Dict[str, Any]:
     return gdict
 
 
-async def create_workflow_from_prompt(session: AsyncSession, prompt: str, model: Optional[str]) -> Tuple[int, bool]:
+async def create_workflow_from_prompt(session: AsyncSession, prompt: str, model: Optional[str], *, user_id: Optional[str] = None) -> Tuple[int, bool]:
     prompt_key = (prompt or "").strip()
     if not prompt_key:
         raise ValueError("prompt is required")
@@ -557,12 +563,15 @@ async def create_workflow_from_prompt(session: AsyncSession, prompt: str, model:
     graph_obj = Graph.model_validate(raw_graph)
     gdict = _normalize_agent_tools(graph_obj.model_dump(by_alias=True))
 
-    stmt = insert(Workflow).values(
-        name=name or "Assistant workflow",
-        description=description,
-        webhook_slug=None,
-        graph_json=gdict,
-    )
+    values: Dict[str, Any] = {
+        "name": name or "Assistant workflow",
+        "description": description,
+        "webhook_slug": None,
+        "graph_json": gdict,
+    }
+    if user_id:
+        values["user_id"] = user_id
+    stmt = insert(Workflow).values(**values)
     result = await session.execute(stmt)
     await session.commit()
     new_id = int(result.inserted_primary_key[0])

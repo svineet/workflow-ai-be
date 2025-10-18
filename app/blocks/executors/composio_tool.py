@@ -78,7 +78,13 @@ class ComposioToolBlock(Block):
             from ...db.session import SessionFactory
 
             async with SessionFactory() as session:  # type: AsyncSession
-                stmt = select(ComposioAccount).where(ComposioAccount.user_id == "system-user", ComposioAccount.toolkit == toolkit).order_by(ComposioAccount.created_at.desc())
+                # Prefer user_id from RunContext if available; fallback system-user
+                current_user_id = getattr(ctx, "user_id", None) or "system-user"
+                stmt = (
+                    select(ComposioAccount)
+                    .where(ComposioAccount.user_id == current_user_id, ComposioAccount.toolkit == toolkit)
+                    .order_by(ComposioAccount.created_at.desc())
+                )
                 res = await session.execute(stmt)
                 row = res.scalars().first()
                 account_id = row.connected_account_id if row is not None else None
@@ -102,7 +108,7 @@ class ComposioToolBlock(Block):
         else:
             try:
                 resp = client.tools.execute(tool_slug, {
-                    "userId": "system-user",
+                    "userId": getattr(ctx, "user_id", None) or "system-user",
                     "connectedAccountId": account_id,
                     "arguments": args,
                     "timeout": timeout_seconds,

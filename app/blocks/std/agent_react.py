@@ -111,8 +111,9 @@ class AgentReactBlock(Block):
             if composio_agents is None:
                 raise ValueError("Composio OpenAI Agents provider is not available. Ensure composio-openai-agents is installed and COMPOSIO_API_KEY is set.")
             try:
+                current_user_id = getattr(ctx, "user_id", None) or "system-user"
                 if toolkit_hints:
-                    tk_tools = composio_agents.tools.get(user_id="system-user", toolkits=toolkit_hints)
+                    tk_tools = composio_agents.tools.get(user_id=current_user_id, toolkits=toolkit_hints)
                     if isinstance(tk_tools, list):
                         tools.extend(tk_tools)
                     await ctx.logger(
@@ -121,7 +122,7 @@ class AgentReactBlock(Block):
                         node_id=node_id,
                     )
                 if tool_slugs:
-                    slug_tools = composio_agents.tools.get(user_id="system-user", tools=tool_slugs)
+                    slug_tools = composio_agents.tools.get(user_id=current_user_id, tools=tool_slugs)
                     if isinstance(slug_tools, list):
                         tools.extend(slug_tools)
                     await ctx.logger(
@@ -130,7 +131,7 @@ class AgentReactBlock(Block):
                         node_id=node_id,
                     )
                 if not tools and not (toolkit_hints or tool_slugs):
-                    env_tools = composio_agents.tools.get(user_id="system-user", toolkits=settings.COMPOSIO_TOOLKITS)
+                    env_tools = composio_agents.tools.get(user_id=current_user_id, toolkits=settings.COMPOSIO_TOOLKITS)
                     if isinstance(env_tools, list):
                         tools.extend(env_tools)
                     await ctx.logger(
