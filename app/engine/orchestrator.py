@@ -22,7 +22,12 @@ async def create_and_start_run(
         wf = await _get_workflow(session, workflow_id)
         if wf is None:
             raise ValueError("Workflow not found")
-        run_id = await _insert_run(session, workflow_id, trigger_type, trigger_payload)
+        # Try to inherit user_id from workflow for multi-tenant scoping
+        try:
+            wf_user_id = getattr(wf, "user_id", None)
+        except Exception:
+            wf_user_id = None
+        run_id = await _insert_run(session, workflow_id, trigger_type, trigger_payload, wf_user_id)
         await session.commit()
 
     background_tasks.add_task(execute_run, run_id, SessionFactory, None)
@@ -35,8 +40,15 @@ async def _get_workflow(session: AsyncSession, workflow_id: int) -> Workflow | N
     return result.scalar_one_or_none()
 
 
-async def _insert_run(session: AsyncSession, workflow_id: int, trigger_type: str, trigger_payload: Optional[Dict[str, Any]]) -> int:
-    stmt = insert(Run).values(workflow_id=workflow_id, trigger_type=trigger_type, trigger_payload_json=trigger_payload or {})
+async def _insert_run(session: AsyncSession, workflow_id: int, trigger_type: str, trigger_payload: Optional[Dict[str, Any]], user_id: Optional[str]) -> int:
+    values: Dict[str, Any] = {
+        "workflow_id": workflow_id,
+        "trigger_type": trigger_type,
+        "trigger_payload_json": trigger_payload or {},
+    }
+    if user_id:
+        values["user_id"] = user_id
+    stmt = insert(Run).values(**values)
     result = await session.execute(stmt)
     run_id = result.inserted_primary_key[0]
     return int(run_id)

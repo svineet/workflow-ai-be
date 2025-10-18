@@ -39,5 +39,14 @@ class Settings:
         # Frontend base URL for redirects to SPA routes
         self.FRONTEND_BASE_URL: str | None = os.getenv("FRONTEND_BASE_URL")
 
+        # Auth (Supabase)
+        self.SUPABASE_URL: str | None = os.getenv("SUPABASE_URL")
+        self.SUPABASE_JWT_AUD: str = os.getenv("SUPABASE_JWT_AUD", "authenticated")
+        self.SUPABASE_PROJECT_REF: str | None = os.getenv("SUPABASE_PROJECT_REF")
+        # Optional static secret (legacy); prefer JWKS verification if available
+        self.SUPABASE_JWT_SECRET: str | None = os.getenv("SUPABASE_JWT_SECRET")
+        allowed_csv = os.getenv("ALLOWED_AUTH_PROVIDERS", "google")
+        self.ALLOWED_AUTH_PROVIDERS: List[str] = [p.strip().lower() for p in allowed_csv.split(",") if p.strip()]
+
 
 settings = Settings()

@@ -49,7 +49,16 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
         async def logger(message: str, data: Dict[str, Any] | None = None, node_id: str | None = None) -> None:
             await insert_log(session, run.id, message, node_id=node_id, data=data)
 
-        ctx = RunContext(gcs=gcs, http=http_client, logger=logger)
+        # Try to resolve user_id from run or workflow as we add multi-tenant support
+        try:
+            run_user_id = getattr(run, "user_id", None)
+        except Exception:
+            run_user_id = None
+        try:
+            workflow_user_id = getattr(run.workflow, "user_id", None) if getattr(run, "workflow", None) else None
+        except Exception:
+            workflow_user_id = None
+        ctx = RunContext(gcs=gcs, http=http_client, logger=logger, user_id=run_user_id or workflow_user_id)
 
         try:
             for node_id in order:

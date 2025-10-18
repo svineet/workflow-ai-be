@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ..db.models import Base
 from ..db.session import engine
-from .middleware import add_cors
+from .middleware import add_cors, add_auth
 from .settings import settings
 from .api import router as api_router
 
@@ -50,6 +50,7 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     add_cors(app)
+    add_auth(app)
 
     @app.on_event("startup")
     async def on_startup():

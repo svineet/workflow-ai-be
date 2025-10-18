@@ -18,3 +18,4 @@ composio
 composio_openai_agents
 openai-agents
 pytest-asyncio
+PyJWT[crypto]
