@@ -373,6 +373,14 @@ async def validate_graph(body: ValidateGraphBody, user_id: str = Depends(require
 @router.post("/workflows/{workflow_id}/run")
 async def start_run(workflow_id: int, body: RunCreate | None = None, background_tasks: BackgroundTasks = None, user_id: str = Depends(require_user_id)):
     background_tasks = background_tasks or BackgroundTasks()
+    # Ensure workflow is accessible to user
+    async with SessionFactory() as session:  # type: AsyncSession
+        wf_res = await session.execute(
+            select(Workflow).where(Workflow.id == workflow_id, (Workflow.user_id == user_id) | (Workflow.user_id.is_(None)))
+        )
+        wf_ok = wf_res.scalar_one_or_none()
+        if wf_ok is None:
+            raise HTTPException(status_code=404, detail="Workflow not found")
     run_id = await create_and_start_run(
         workflow_id,
         trigger_type="manual",
@@ -429,6 +437,11 @@ async def get_run(run_id: int, session: AsyncSession = Depends(get_session), use
 
 @router.get("/runs/{run_id}/logs")
 async def get_run_logs(run_id: int, after_id: Optional[int] = None, session: AsyncSession = Depends(get_session), user_id: str = Depends(require_user_id)):
+    # Enforce ownership
+    run_res = await session.execute(select(Run).where(Run.id == run_id, (Run.user_id == user_id) | (Run.user_id.is_(None))))
+    run = run_res.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
     stmt = select(Log).where(Log.run_id == run_id)
     if after_id is not None:
         stmt = stmt.where(Log.id > after_id)
@@ -450,7 +463,12 @@ async def get_run_logs(run_id: int, after_id: Optional[int] = None, session: Asy
 
 
 @router.get("/runs/{run_id}/stream")
-async def stream_run(run_id: int):
+async def stream_run(run_id: int, user_id: str = Depends(require_user_id)):
+    # Validate ownership before starting stream
+    async with SessionFactory() as session:
+        chk = await session.execute(select(Run).where(Run.id == run_id, (Run.user_id == user_id) | (Run.user_id.is_(None))))
+        if chk.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Run not found")
     async def event_gen():
         last_id = 0
         last_status: Optional[str] = None
@@ -499,8 +517,8 @@ async def stream_run(run_id: int):
 
 # Alias route to satisfy clients/tests expecting /runs/{run_id}/logs/stream
 @router.get("/runs/{run_id}/logs/stream")
-async def stream_run_logs_alias(run_id: int):
-    return await stream_run(run_id)
+async def stream_run_logs_alias(run_id: int, user_id: str = Depends(require_user_id)):
+    return await stream_run(run_id, user_id)  # type: ignore[arg-type]
 
 
 class HookPayload(BaseModel):
@@ -543,7 +561,7 @@ async def composio_authorize(body: ComposioAuthorizeBody, request: Request, user
     auth_config_id = settings.COMPOSIO_AUTH_CONFIGS.get(body.toolkit)
     if not auth_config_id:
         raise HTTPException(status_code=400, detail="Unknown toolkit or COMPOSIO_AUTH_CONFIGS missing for requested toolkit")
-    state = _sign_state({"tk": body.toolkit, "nonce": secrets.token_hex(8)})
+    state = _sign_state({"tk": body.toolkit, "uid": user_id, "nonce": secrets.token_hex(8)})
     cb = str(request.url_for("composio_callback"))
     try:
         # Prefer hosted connect link for OAuth/API-Key flows
@@ -560,15 +578,16 @@ async def composio_callback(
     state: Optional[str] = None,
     connected_account_id: Optional[str] = None,
     session: AsyncSession = Depends(get_session),
-    user_id: str = Depends(require_user_id),
 ):
     client = get_composio_client()
     if client is None:
         raise HTTPException(status_code=400, detail="Composio is not configured. Set COMPOSIO_API_KEY and install composio.")
     if state is None or toolkit is None:
         raise HTTPException(status_code=400, detail="Missing state/toolkit")
-    _ = _parse_state(state)  # keep for future use
-    # user_id from dependency
+    parsed = _parse_state(state)
+    user_id = (parsed or {}).get("uid")
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(status_code=400, detail="Invalid state")
     # Wait for connection using request id if provided
     connected = None
     if connection_request_id:
