@@ -8,6 +8,8 @@ from ..registry import register
 from ..base import Block, RunContext
 from ...server.settings import settings
 from ...services.composio import get_composio_client
+from ...db.session import SessionFactory
+from ...db.models import ComposioAccount
 
 
 class ComposioToolSettings(BaseModel):
@@ -71,14 +73,17 @@ class ComposioToolBlock(Block):
         # Resolve connected account id
         account_id = use_account
         if not account_id:
-            # single-tenant lookup of most recent active account for toolkit
+            # lookup of most recent active account for toolkit for current user (if available via ctx)
             from sqlalchemy import select
             from sqlalchemy.ext.asyncio import AsyncSession
-            from ...db.models import ComposioAccount
-            from ...db.session import SessionFactory
+
+            # Derive user id from RunContext if available
+            user_id = getattr(ctx, "user_id", None)
 
             async with SessionFactory() as session:  # type: AsyncSession
-                stmt = select(ComposioAccount).where(ComposioAccount.user_id == "system-user", ComposioAccount.toolkit == toolkit).order_by(ComposioAccount.created_at.desc())
+                stmt = select(ComposioAccount).where(ComposioAccount.toolkit == toolkit).order_by(ComposioAccount.created_at.desc())
+                if user_id:
+                    stmt = stmt.where(ComposioAccount.user_id == user_id)
                 res = await session.execute(stmt)
                 row = res.scalars().first()
                 account_id = row.connected_account_id if row is not None else None
@@ -101,8 +106,8 @@ class ComposioToolBlock(Block):
             resp = {"ok": True, "echo": {"tool_slug": tool_slug, "args": args}}
         else:
             try:
+                # Composio expects a userId to scope executions; we rely on connectedAccountId primarily.
                 resp = client.tools.execute(tool_slug, {
-                    "userId": "system-user",
                     "connectedAccountId": account_id,
                     "arguments": args,
                     "timeout": timeout_seconds,

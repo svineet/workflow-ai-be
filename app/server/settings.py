@@ -39,5 +39,10 @@ class Settings:
         # Frontend base URL for redirects to SPA routes
         self.FRONTEND_BASE_URL: str | None = os.getenv("FRONTEND_BASE_URL")
 
+        # Supabase Auth
+        self.SUPABASE_JWT_SECRET: str | None = os.getenv("SUPABASE_JWT_SECRET")
+        self.SUPABASE_PROJECT_URL: str | None = os.getenv("SUPABASE_PROJECT_URL")
+        self.SUPABASE_ANON_KEY: str | None = os.getenv("SUPABASE_ANON_KEY")
+
 
 settings = Settings()

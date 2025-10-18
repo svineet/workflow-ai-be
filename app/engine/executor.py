@@ -49,7 +49,13 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
         async def logger(message: str, data: Dict[str, Any] | None = None, node_id: str | None = None) -> None:
             await insert_log(session, run.id, message, node_id=node_id, data=data)
 
+        # Attach run/user context to RunContext for downstream tools
         ctx = RunContext(gcs=gcs, http=http_client, logger=logger)
+        try:
+            ctx.run_id = run.id
+            ctx.user_id = getattr(run, "user_id", None)
+        except Exception:
+            pass
 
         try:
             for node_id in order:
