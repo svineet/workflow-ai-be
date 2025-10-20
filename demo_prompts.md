@@ -4,7 +4,6 @@ Calendar Summary + Slack + GMail
 Summarise my last week's calendar, ending Oct 11th 2025. Send the report to saivineet89@gmail.com, and also announce on Slack #general.
 
 
-
 AI News Digest + Gmail + Slack
 ==============================
 

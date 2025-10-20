@@ -1,0 +1,59 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+## Database Migrations Playbook (Alembic)
+
+This repository uses SQLAlchemy models under [workflow-ai-be/app/db/models.py](mdc:workflow-ai-be/app/db/models.py). Use Alembic for Postgres migrations.
+
+### Prereqs
+- Install deps (in backend venv):
+  - `pip install -r workflow-ai-be/requirements.txt`
+- Ensure your Postgres `DATABASE_URL` is set, e.g.: `export DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/workflow_ai`
+- For Alembic config, use a sync URL in `alembic.ini` (psycopg): `postgresql+psycopg://postgres:postgres@localhost:5432/workflow_ai`
+
+### One-time setup
+1) Initialize Alembic in the backend directory:
+```bash
+cd workflow-ai-be
+alembic init alembic
+```
+2) Configure `alembic.ini`:
+- Set `sqlalchemy.url = postgresql+psycopg://postgres:postgres@localhost:5432/workflow_ai`
+3) Edit `alembic/env.py` to use the project metadata:
+```python
+from app.db.models import Base
+target_metadata = Base.metadata
+```
+
+### Create a migration (autogenerate)
+When models change (e.g., add columns), create a new revision:
+```bash
+cd workflow-ai-be
+alembic revision --autogenerate -m "describe change"
+```
+- Review the generated script under `workflow-ai-be/alembic/versions/` and ensure the operations match the intended DB changes.
+
+### Apply migrations
+Upgrade the database to the latest revision:
+```bash
+cd workflow-ai-be
+alembic upgrade head
+```
+
+### Common tips
+- Dev SQLite is created at startup by `create_all`; production Postgres must be managed via Alembic.
+- For async app URLs, keep Alembic’s URL sync (`psycopg`) in `alembic.ini`.
+- If `autogenerate` misses a change, write the op.* calls manually.
+- Example op for adding a column:
+```python
+from alembic import op
+import sqlalchemy as sa
+
+op.add_column('workflows', sa.Column('description', sa.Text(), nullable=True))
+```
+- Downgrade example:
+```python
+op.drop_column('workflows', 'description')
+```
