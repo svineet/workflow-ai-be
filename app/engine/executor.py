@@ -63,11 +63,15 @@ async def execute_run(run_id: int, SessionFactory, gcs_bucket: str | None = None
                 await logger(f"Starting node {node.id}", node_id=node.id)
 
                 upstream_outputs = {pid: outputs[pid] for pid in parents_map.get(node.id, []) if pid in outputs}
+                # Prefer run.user_id (denormalized) and fall back to workflow.user_id
+                effective_user_id = getattr(run, "user_id", None) or getattr(run.workflow, "user_id", None) or "system-user"
+
                 node_input: Dict[str, Any] = {
                     "settings": getattr(node, "settings", {}) or {},
                     "upstream": upstream_outputs,
                     "trigger": run.trigger_payload_json,
                     "node_id": node.id,
+                    "user_id": effective_user_id,
                 }
 
                 # Attach derived tools for agent nodes

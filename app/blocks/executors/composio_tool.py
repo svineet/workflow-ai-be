@@ -4,10 +4,16 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..registry import register
 from ..base import Block, RunContext
 from ...server.settings import settings
 from ...services.composio import get_composio_client
+
+from ...db.models import ComposioAccount
+from ...db.session import SessionFactory
 
 
 class ComposioToolSettings(BaseModel):
@@ -48,6 +54,7 @@ class ComposioToolBlock(Block):
             raise ValueError("COMPOSIO_API_KEY is required for tool.composio")
 
         upstream = input.get("upstream") or {}
+        caller_user_id: str = str(input.get("user_id") or "system-user")
         extra_ctx = {"settings": s, "trigger": input.get("trigger") or {}, "nodes": upstream}
 
         def _render_map(obj: Any) -> Any:
@@ -72,21 +79,17 @@ class ComposioToolBlock(Block):
         account_id = use_account
         if not account_id:
             # single-tenant lookup of most recent active account for toolkit
-            from sqlalchemy import select
-            from sqlalchemy.ext.asyncio import AsyncSession
-            from ...db.models import ComposioAccount
-            from ...db.session import SessionFactory
 
             async with SessionFactory() as session:  # type: AsyncSession
-                stmt = select(ComposioAccount).where(ComposioAccount.user_id == "system-user", ComposioAccount.toolkit == toolkit).order_by(ComposioAccount.created_at.desc())
+                stmt = select(ComposioAccount).where(ComposioAccount.user_id == caller_user_id, ComposioAccount.toolkit == toolkit).order_by(ComposioAccount.created_at.desc())
                 res = await session.execute(stmt)
                 row = res.scalars().first()
                 account_id = row.connected_account_id if row is not None else None
 
         if not account_id:
             await ctx.logger(
-                f"tool.composio: No connected account found for toolkit {toolkit}. Authorize via Integrations.",
-                {"toolkit": toolkit, "error": "No connected account"},
+                f"ERROR: tool.composio: No connected account found for toolkit {toolkit} for current user.",
+                {"toolkit": toolkit, "error": "No connected account", "user_id": caller_user_id},
                 node_id=input.get("node_id"),
             )
             raise ValueError(f"No connected account found for toolkit {toolkit}. Authorize via Integrations.")
@@ -102,7 +105,7 @@ class ComposioToolBlock(Block):
         else:
             try:
                 resp = client.tools.execute(tool_slug, {
-                    "userId": "system-user",
+                    "userId": caller_user_id,
                     "connectedAccountId": account_id,
                     "arguments": args,
                     "timeout": timeout_seconds,

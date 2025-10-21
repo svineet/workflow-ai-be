@@ -157,24 +157,24 @@ EX_AGENT_WEBSEARCH_GRAPH: Dict[str, Any] = {
 
 EX_SLACK_ANNOUNCE_GRAPH: Dict[str, Any] = {
     "nodes": [
-        {"id": "start", "type": "start", "settings": {"payload": {"channel": "#general"}}},
+        {"id": "start", "type": "start", "settings": {"payload": {"channel": "#general"}}, "position": {"x": 38.2659927797834, "y": -154.2597833935018}},
         {"id": "agent", "type": "agent.react", "settings": {
             "system": "You craft a short friendly announcement with emojis.",
-            "prompt": "Announce: Workflow AI backend has new seed workflows! Keep under 25 words. Post it to Slack in any channel. Report what you did.",
-            "model": "gpt-5"
-        }},
-        {"id": "slack", "type": "tool.composio", "settings": {
-            "toolkit": "SLACK",
-            "tool_slug": "SLACK_SEND_MESSAGE",
-            "args": {"channel": "{{ start.data.channel }}", "text": "{{ upstream.agent.final }}"}
-        }},
-        {"id": "show", "type": "show", "settings": {"template": "Slack: {{ start.data.channel }} ← {{ upstream.agent.final }}"}},
+            "prompt": "Announce: Workflow AI backend has new seed workflows! Keep under 25 words, and send it to {{ start.data.channel }}",
+            "tools": [],
+            "model": "gpt-5",
+            "temperature": 1,
+            "max_steps": 8,
+            "timeout_seconds": 60
+        }, "position": {"x": 300.0, "y": 1.1958122743682225}},
+        {"id": "slack", "type": "tool.composio", "settings": {"use_account": None, "timeout_seconds": None, "toolkit": "", "tool_slug": "SLACK_SEND_MESSAGE", "args": {"channel": "{{ start.data.channel }}", "text": "{{ upstream.agent.final }}"}}, "position": {"x": -89.98368231046928, "y": 344.3939350180506}},
+        {"id": "show", "type": "show", "settings": {"template": "Slack: {{ start.data.channel }} ← {{ upstream.agent.final }}"}, "position": {"x": 673.9914801444044, "y": -71.74873646209387}}
     ],
     "edges": [
-        {"id": "e1", "from": "start", "to": "agent"},
-        {"id": "e2", "from": "agent", "to": "show"},
-        {"id": "e3", "from": "start", "to": "show"},
+        {"id": "e1", "from": "start", "to": "agent", "kind": "control"},
+        {"id": "e2", "from": "agent", "to": "show", "kind": "control"},
         {"id": "t1", "from": "agent", "to": "slack", "kind": "tool"},
+        {"id": "reactflow__edge-start-show", "from": "start", "to": "show", "kind": "control"}
     ],
 }
 
