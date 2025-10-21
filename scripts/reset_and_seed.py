@@ -128,7 +128,7 @@ EX_JOKE_GMAIL_GRAPH: Dict[str, Any] = {
 EX_FETCH_SUMMARIZE_SHOW_GRAPH: Dict[str, Any] = {
     "nodes": [
         {"id": "get", "type": "http.request", "settings": {"method": "GET", "url": "https://api.github.com/repos/python/cpython", "headers": {"Accept": "application/vnd.github+json"}}},
-        {"id": "summ", "type": "llm.simple", "settings": {"prompt": "Summarize key facts about this repository: {{ get.data }}", "model": "gpt-4o-mini"}},
+        {"id": "summ", "type": "llm.simple", "settings": {"prompt": "Summarize key facts about this repository: {{ get.data }}", "model": "gpt-5"}},
         {"id": "show", "type": "show", "settings": {"template": "Summary: {{ upstream.summ.text }}"}},
     ],
     "edges": [
@@ -173,6 +173,7 @@ EX_SLACK_ANNOUNCE_GRAPH: Dict[str, Any] = {
     "edges": [
         {"id": "e1", "from": "start", "to": "agent"},
         {"id": "e2", "from": "agent", "to": "show"},
+        {"id": "e3", "from": "start", "to": "show"},
         {"id": "t1", "from": "agent", "to": "slack", "kind": "tool"},
     ],
 }
@@ -303,7 +304,7 @@ COMPOSIO_SLACK_ANNOUNCE_GRAPH: Dict[str, Any] = {
         {"id": "agent", "type": "agent.react", "settings": {
             "system": "You craft a short friendly announcement with emojis.",
             "prompt": "Announce: Workflow AI backend has new seed workflows! Keep under 25 words.",
-            "model": "gpt-4o-mini",
+            "model": "gpt-5-mini",
         }},
         {"id": "slack", "type": "tool.composio", "settings": {
             "toolkit": "SLACK",
@@ -325,7 +326,7 @@ COMPOSIO_CAL_EVENT_GRAPH: Dict[str, Any] = {
         {"id": "agent", "type": "agent.react", "settings": {
             "system": "You convert details into a calendar description.",
             "prompt": "Create a one‑sentence description for the meeting title {{ start.data.title }}.",
-            "model": "gpt-4o-mini",
+            "model": "gpt-5-mini",
         }},
         {"id": "gcal", "type": "tool.composio", "settings": {
             "toolkit": "GOOGLECALENDAR",
@@ -342,6 +343,7 @@ COMPOSIO_CAL_EVENT_GRAPH: Dict[str, Any] = {
     "edges": [
         {"id": "e1", "from": "start", "to": "agent"},
         {"id": "e2", "from": "agent", "to": "show"},
+        {"id": "e3", "from": "start", "to": "show"},
         {"id": "t1", "from": "agent", "to": "gcal", "kind": "tool"},
     ],
 }
@@ -352,7 +354,7 @@ COMPOSIO_DRIVE_UPLOAD_GRAPH: Dict[str, Any] = {
         {"id": "agent", "type": "agent.react", "settings": {
             "system": "You briefly label uploaded assets.",
             "prompt": "Generate a short one‑line label for {{ start.data.name }}.",
-            "model": "gpt-4o-mini",
+            "model": "gpt-5-mini",
         }},
         {"id": "drive", "type": "tool.composio", "settings": {
             "toolkit": "GOOGLEDRIVE",
@@ -364,6 +366,7 @@ COMPOSIO_DRIVE_UPLOAD_GRAPH: Dict[str, Any] = {
     "edges": [
         {"id": "e1", "from": "start", "to": "agent"},
         {"id": "e2", "from": "agent", "to": "show"},
+        {"id": "e3", "from": "start", "to": "show"},
         {"id": "t1", "from": "agent", "to": "drive", "kind": "tool"},
     ],
 }
@@ -374,7 +377,7 @@ WEBSEARCH_RECOMMENDATIONS_GRAPH: Dict[str, Any] = {
         {"id": "agent", "type": "agent.react", "settings": {
             "system": "You research and provide concise recommendations using a web search tool when helpful.",
             "prompt": "Find 3 modern {{ start.data.topic }} and summarize pros/cons in one sentence each.",
-            "model": "gpt-4o-mini",
+            "model": "gpt-5-mini",
         }},
         {"id": "web", "type": "tool.websearch", "settings": {}},
         {"id": "show", "type": "show", "settings": {"template": "Recommendations: {{ upstream.agent.final }}"}},
@@ -426,19 +429,21 @@ CALENDAR_SUMMARY_GRAPH: Dict[str, Any] = {
         {"id": "start", "type": "start", "settings": {"payload": {"calendarId": "primary"}}, "position": {"x": 0.0, "y": 0.0}},
         {"id": "agent", "type": "agent.react", "settings": {
             "system": "You retrieve today's meetings from the user's Google Calendar and return a clear, concise summary.",
-            "prompt": "Goal: Summarize all meetings scheduled TODAY on the user's Google Calendar.\n\nGuidelines:\n- Treat \"today\" as the current date at execution time in the calendar's own timezone.\n- First, get the calendar timezone for the {{ start.data.calendarId }} calendar (e.g., via CalendarList.get for 'primary'). If unavailable, default to the timezone present in event start/end data; only if neither is available, fall back to UTC.\n- Compute the day's boundaries in that timezone: 00:00:00 to 23:59:59.\n- List events for {{ start.data.calendarId }} with singleEvents=true and orderBy=startTime between timeMin and timeMax. Request enough results (e.g., maxResults=250) to cover a busy day.\n- Build a succinct summary:\n  • Date header (e.g., Saturday, October 11, 2025 – <Timezone>).\n  • Total count of meetings and total scheduled time.\n  • Chronological agenda: start–end (12‑hour with am/pm), title, organizer, top attendees (up to 5), location or conferencing link, and meeting status (e.g., accepted/needs‑action) if available.\n  • Flag overlaps/conflicts explicitly.\n  • Note all‑day events separately at the top.\n- If no meetings, state clearly that there are none today.\n- Be concise and readable.\n\nPerform the necessary tool calls and return only the final summary text.",
+            "prompt": "Goal: Summarize all meetings scheduled TODAY on the user's Google Calendar.\n\nGuidelines:\n- Treat \"today\" as the current date at execution time in the calendar's own timezone.\n- First, get the calendar timezone for the {{ start.data.calendarId }} calendar (e.g., via CalendarList.get for 'primary'). If unavailable, default to the timezone present in event start/end data; only if neither is available, fall back to UTC.\n- Compute the day's boundaries in that timezone: 00:00:00 to 23:59:59.\n- List events for {{ start.data.calendarId }} with singleEvents=true and orderBy=startTime between timeMin and timeMax. Request enough results (e.g., maxResults=250) to cover a busy day.\n- Build a succinct summary:\n  • Date header (e.g., Saturday, October 11, 2025 – <Timezone>).\n  • Total count of meetings and total scheduled time.\n  • Chronological agenda: start–end (12‑hour with am/pm), title, organizer, top attendees (up to 5), location or conferencing link, and meeting status (e.g., accepted/needs‑action) if available.\n  • Flag overlaps/conflicts explicitly.\n  • Note all‑day events separately at the top.\n- If no meetings, state clearly that there are none today.\n- Be concise and readable.\n\nUse the code interpreter tool if helpful for date/time math. Return only the final summary text. Find today using code interpreter tool.",
             "tools": [],
-            "model": "gpt-4o-mini",
+            "model": "gpt-5-mini",
             "temperature": 0.2,
             "max_steps": 8,
             "timeout_seconds": 120
         }, "position": {"x": 478.66654335259375, "y": -320.77267334538925}},
         {"id": "gcal", "type": "tool.composio", "settings": {"use_account": None, "timeout_seconds": None, "toolkit": "GOOGLECALENDAR"}, "position": {"x": 109.43729127867095, "y": 788.3786399149903}},
+        {"id": "ci", "type": "tool.code_interpreter", "settings": {}, "position": {"x": 300.0, "y": 250.0}},
         {"id": "show", "type": "show", "settings": {"template": "{{ upstream.agent.final }}"}, "position": {"x": 900.0, "y": 0.0}},
     ],
     "edges": [
         {"id": "e1", "from": "start", "to": "agent", "kind": "control"},
         {"id": "t1", "from": "agent", "to": "gcal", "kind": "tool"},
+        {"id": "t2", "from": "agent", "to": "ci", "kind": "tool"},
         {"id": "e2", "from": "agent", "to": "show", "kind": "control"},
     ],
 }
@@ -452,7 +457,7 @@ async def clear_db(session: AsyncSession) -> None:
     await session.execute(delete(Workflow))
 
 
-async def seed_db(session: AsyncSession) -> None:
+async def seed_db(session: AsyncSession) -> int:
     rows = [
             {
                 "name": "Repo Summary (HTTP -> LLM -> Show)",
@@ -477,18 +482,6 @@ async def seed_db(session: AsyncSession) -> None:
                 "description": "Start query flows to agent prompt; agent uses calculator tool via tool edge",
                 "webhook_slug": None,
                 "graph_json": AGENT_CALC_GRAPH,
-            },
-            {
-                "name": "Audio TTS → UI Audio",
-                "description": "Synthesize speech and render as audio",
-                "webhook_slug": None,
-                "graph_json": AUDIO_TTS_GRAPH,
-            },
-            {
-                "name": "Audio STT → Show",
-                "description": "Transcribe a remote audio file and show text",
-                "webhook_slug": None,
-                "graph_json": AUDIO_STT_GRAPH,
             },
             {
                 "name": "Example: Joke via Gmail (Composio)",
@@ -539,12 +532,6 @@ async def seed_db(session: AsyncSession) -> None:
                 "graph_json": COMPOSIO_CAL_EVENT_GRAPH,
             },
             {
-                "name": "Drive: Upload File (Composio)",
-                "description": "Upload a file from URL to Drive with a generated label",
-                "webhook_slug": None,
-                "graph_json": COMPOSIO_DRIVE_UPLOAD_GRAPH,
-            },
-            {
                 "name": "Web Search Recommendations",
                 "description": "Agent uses web search tool to research and summarize",
                 "webhook_slug": None,
@@ -563,7 +550,10 @@ async def seed_db(session: AsyncSession) -> None:
                 "graph_json": CALENDAR_SUMMARY_GRAPH,
             },
     ]
+    # Exclude audio workflows (no blob storage configured)
+    rows = [r for r in rows if not r["name"].startswith("Audio TTS") and not r["name"].startswith("Audio STT")]
     await session.execute(Workflow.__table__.insert(), rows)
+    return len(rows)
 
 
 async def main() -> None:
@@ -588,9 +578,9 @@ async def main() -> None:
         async with session.begin():
             await clear_db(session)
         async with session.begin():
-            await seed_db(session)
+            count = await seed_db(session)
         await session.commit()
-    print("Seeded 17 workflows.")
+    print(f"Seeded {count} workflows.")
 
 
 if __name__ == "__main__":

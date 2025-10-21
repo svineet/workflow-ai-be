@@ -12,7 +12,7 @@ from ...server.settings import settings
 
 class LlmSimpleSettings(BaseModel):
     prompt: str = Field(..., description="Prompt text to send to LLM (supports {{ }} substitutions)")
-    model: Optional[str] = Field(default="gpt-4o-mini", description="OpenAI model")
+    model: Optional[str] = Field(default="gpt-5", description="OpenAI model")
 
 
 class LlmSimpleOutput(BaseModel):
@@ -29,7 +29,7 @@ class LlmSimpleBlock(Block):
     async def run(self, input: Dict[str, Any], ctx: RunContext) -> Dict[str, Any]:
         s = self.settings
         raw_prompt = s.get("prompt")
-        model = s.get("model") or "gpt-4o-mini"
+        model = s.get("model") or "gpt-5"
         if not raw_prompt:
             raise ValueError("llm.simple requires 'prompt'")
 
