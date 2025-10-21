@@ -258,7 +258,7 @@ async def list_workflows(session: AsyncSession = Depends(get_session), request: 
         {
             "id": w.id,
             "name": w.name,
-            "description": w.description,
+            "description": (w.description or ""),
             "webhook_slug": w.webhook_slug,
             "created_at": w.created_at.isoformat(),
         }

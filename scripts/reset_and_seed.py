@@ -38,7 +38,7 @@ WEATHER_GRAPH: Dict[str, Any] = {
         {
             "id": "n3",
             "type": "show",
-            "settings": {"template": "LLM Summary"},
+            "settings": {"template": "LLM Summary: {{ n2.text }}"},
         },
     ],
     "edges": [
@@ -61,9 +61,9 @@ MINIMAL_GRAPH: Dict[str, Any] = {
 
 SLEEP_GRAPH: Dict[str, Any] = {
     "nodes": [
-        {"id": "sleep1", "type": "util.sleep", "settings": {"seconds": 0.2}},
-        {"id": "sleep2", "type": "util.sleep", "settings": {"seconds": 0.2}},
-        {"id": "sleep3", "type": "util.sleep", "settings": {"seconds": 0.2}},
+        {"id": "sleep1", "type": "util.sleep", "settings": {"seconds": 5}},
+        {"id": "sleep2", "type": "util.sleep", "settings": {"seconds": 5}},
+        {"id": "sleep3", "type": "util.sleep", "settings": {"seconds": 5}},
     ],
     "edges": [
         {"id": "e1", "from": "sleep1", "to": "sleep2"},
@@ -80,7 +80,7 @@ AGENT_CALC_GRAPH: Dict[str, Any] = {
             "type": "agent.react",
             "settings": {
                 "system": "You are a math assistant. Use the calculator tool to compute the result of the user's query.",
-                "prompt": "Please compute this: {{ start.query }}",
+                "prompt": "Please compute this: {{ start.data.query }}",
                 "model": "gpt-5",
                 "temperature": 1,
                 "max_steps": 4
@@ -453,9 +453,7 @@ async def clear_db(session: AsyncSession) -> None:
 
 
 async def seed_db(session: AsyncSession) -> None:
-    await session.execute(
-        Workflow.__table__.insert(),
-        [
+    rows = [
             {
                 "name": "Repo Summary (HTTP -> LLM -> Show)",
                 "description": "Fetch public repo JSON and summarize with LLM, then display",
@@ -491,6 +489,36 @@ async def seed_db(session: AsyncSession) -> None:
                 "description": "Transcribe a remote audio file and show text",
                 "webhook_slug": None,
                 "graph_json": AUDIO_STT_GRAPH,
+            },
+            {
+                "name": "Example: Joke via Gmail (Composio)",
+                "description": "LLM joke via agent + Gmail tool",
+                "webhook_slug": None,
+                "graph_json": EX_JOKE_GMAIL_GRAPH,
+            },
+            {
+                "name": "Example: Fetch → Summarize → Show",
+                "description": "HTTP fetch then summarize via LLM",
+                "webhook_slug": None,
+                "graph_json": EX_FETCH_SUMMARIZE_SHOW_GRAPH,
+            },
+            {
+                "name": "Example: Agent + Websearch",
+                "description": "Agent with web search tool attached",
+                "webhook_slug": None,
+                "graph_json": EX_AGENT_WEBSEARCH_GRAPH,
+            },
+            {
+                "name": "Example: Slack Announcement (Composio)",
+                "description": "Agent crafts and posts announcement to Slack",
+                "webhook_slug": None,
+                "graph_json": EX_SLACK_ANNOUNCE_GRAPH,
+            },
+            {
+                "name": "Example: Calendar Create Event (Composio)",
+                "description": "Agent creates calendar event via Composio",
+                "webhook_slug": None,
+                "graph_json": EX_CAL_CREATE_EVENT_GRAPH,
             },
             {
                 "name": "Composio Gmail Joke (472)",
@@ -534,8 +562,8 @@ async def seed_db(session: AsyncSession) -> None:
                 "webhook_slug": None,
                 "graph_json": CALENDAR_SUMMARY_GRAPH,
             },
-        ],
-    )
+    ]
+    await session.execute(Workflow.__table__.insert(), rows)
 
 
 async def main() -> None:
