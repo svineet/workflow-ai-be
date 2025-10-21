@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 from collections import OrderedDict
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,8 @@ import secrets
 import re
 
 router = APIRouter()
+auth_scheme_optional = HTTPBearer(auto_error=False)
+auth_scheme_required = HTTPBearer(auto_error=True)
 
 
 async def get_session() -> AsyncSession:
@@ -34,8 +37,59 @@ async def get_session() -> AsyncSession:
 
 
 def _current_user_id(request: Request) -> str:
-    # TODO: integrate with real auth; for now, single-tenant system user
-    return "system-user"
+    # Supabase JWT (HS256). If missing/invalid, fallback to system-user.
+    import base64, json as _json, hmac, hashlib
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    token = None
+    if auth and auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return "system-user"
+    try:
+        header_b64, payload_b64, sig_b64 = token.split(".")
+        def _b64url_decode(s: str) -> bytes:
+            s += "=" * (-len(s) % 4)
+            return base64.urlsafe_b64decode(s.encode("utf-8"))
+        secret = settings.SUPABASE_JWT_SECRET
+        if secret:
+            signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+            expected = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+            sig = _b64url_decode(sig_b64)
+            if not hmac.compare_digest(expected, sig):
+                return "system-user"
+        payload = _json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+        sub = str(payload.get("sub") or payload.get("user_id") or "").strip()
+        return sub or "system-user"
+    except Exception:
+        return "system-user"
+
+
+async def require_user(request: Request, creds: HTTPAuthorizationCredentials = Depends(auth_scheme_required)) -> str:
+    # Enforce presence and validity of Supabase JWT
+    import base64, json as _json, hmac, hashlib
+    token = creds.credentials
+    try:
+        header_b64, payload_b64, sig_b64 = token.split(".")
+        def _b64url_decode(s: str) -> bytes:
+            s += "=" * (-len(s) % 4)
+            return base64.urlsafe_b64decode(s.encode("utf-8"))
+        secret = settings.SUPABASE_JWT_SECRET
+        if not secret:
+            raise HTTPException(status_code=401, detail="Auth not configured")
+        signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+        expected = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+        sig = _b64url_decode(sig_b64)
+        if not hmac.compare_digest(expected, sig):
+            raise HTTPException(status_code=401, detail="Invalid token")
+        payload = _json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+        sub = str(payload.get("sub") or payload.get("user_id") or "").strip()
+        if not sub:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        return sub
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 
 def _sign_state(data: Dict[str, Any]) -> str:
@@ -171,9 +225,9 @@ class AssistantNewBody(BaseModel):
 
 
 @router.post("/assistant/new")
-async def assistant_new(body: AssistantNewBody, session: AsyncSession = Depends(get_session)):
+async def assistant_new(body: AssistantNewBody, session: AsyncSession = Depends(get_session), user_id: str = Depends(require_user)):
     try:
-        new_id, cached = await create_workflow_from_prompt(session, body.prompt, body.model)
+        new_id, cached = await create_workflow_from_prompt(session, body.prompt, body.model, user_id=user_id)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex))
     resp: Dict[str, Any] = {"id": new_id}
@@ -183,9 +237,9 @@ async def assistant_new(body: AssistantNewBody, session: AsyncSession = Depends(
 
 
 @router.post("/assistant/new/stream")
-async def assistant_new_stream(body: AssistantNewBody, session: AsyncSession = Depends(get_session)):
+async def assistant_new_stream(body: AssistantNewBody, session: AsyncSession = Depends(get_session), user_id: str = Depends(require_user)):
     async def event_gen():
-        async for chunk in stream_graph_from_prompt(session, body.prompt, body.model):
+        async for chunk in stream_graph_from_prompt(session, body.prompt, body.model, user_id=user_id):
             try:
                 yield f"data: {json.dumps(chunk)}\n\n"
             except Exception:
@@ -195,8 +249,9 @@ async def assistant_new_stream(body: AssistantNewBody, session: AsyncSession = D
 
 
 @router.get("/workflows")
-async def list_workflows(session: AsyncSession = Depends(get_session)):
-    stmt = select(Workflow).order_by(Workflow.id.asc())
+async def list_workflows(session: AsyncSession = Depends(get_session), request: Request = None, _creds: HTTPAuthorizationCredentials | None = Depends(auth_scheme_optional)):
+    uid = _current_user_id(request)
+    stmt = select(Workflow).where((Workflow.user_id == uid) | (Workflow.user_id.is_(None))).order_by(Workflow.id.asc())
     result = await session.execute(stmt)
     rows = result.scalars().all()
     return [
@@ -218,8 +273,9 @@ async def list_runs(
     limit: Optional[int] = None,
     before_id: Optional[int] = None,
     session: AsyncSession = Depends(get_session),
+    user_id: str = Depends(require_user),
 ):
-    stmt = select(Run)
+    stmt = select(Run).where((Run.user_id == user_id) | (Run.user_id.is_(None)))
     if workflow_id is not None:
         stmt = stmt.where(Run.workflow_id == workflow_id)
     if status is not None:
@@ -273,7 +329,7 @@ async def list_runs(
 
 
 @router.post("/workflows")
-async def create_workflow(body: WorkflowCreate, session: AsyncSession = Depends(get_session)):
+async def create_workflow(body: WorkflowCreate, session: AsyncSession = Depends(get_session), user_id: str = Depends(require_user)):
     # Validate/normalize agent tools per backend rules
     gdict = _validate_and_normalize_agent_tools(body.graph)
     stmt = insert(Workflow).values(
@@ -281,6 +337,7 @@ async def create_workflow(body: WorkflowCreate, session: AsyncSession = Depends(
         description=body.description,
         webhook_slug=body.webhook_slug,
         graph_json=gdict,
+        user_id=user_id,
     )
     result = await session.execute(stmt)
     await session.commit()
@@ -288,11 +345,14 @@ async def create_workflow(body: WorkflowCreate, session: AsyncSession = Depends(
 
 
 @router.get("/workflows/{workflow_id}")
-async def get_workflow(workflow_id: int, session: AsyncSession = Depends(get_session)):
+async def get_workflow(workflow_id: int, session: AsyncSession = Depends(get_session), request: Request = None, _creds: HTTPAuthorizationCredentials | None = Depends(auth_scheme_optional)):
     stmt = select(Workflow).where(Workflow.id == workflow_id)
     result = await session.execute(stmt)
     wf = result.scalar_one_or_none()
     if wf is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    uid = _current_user_id(request)
+    if wf.user_id and wf.user_id != uid:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return {
         "id": wf.id,
@@ -305,7 +365,14 @@ async def get_workflow(workflow_id: int, session: AsyncSession = Depends(get_ses
 
 
 @router.put("/workflows/{workflow_id}")
-async def update_workflow(workflow_id: int, body: WorkflowUpdate, session: AsyncSession = Depends(get_session)):
+async def update_workflow(workflow_id: int, body: WorkflowUpdate, session: AsyncSession = Depends(get_session), user_id: str = Depends(require_user)):
+    # Ownership check
+    chk = await session.execute(select(Workflow).where(Workflow.id == workflow_id))
+    cur = chk.scalar_one_or_none()
+    if cur is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    if cur.user_id and cur.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     values: Dict[str, Any] = {}
     if body.name is not None:
         values["name"] = body.name
@@ -325,12 +392,14 @@ async def update_workflow(workflow_id: int, body: WorkflowUpdate, session: Async
 
 
 @router.delete("/workflows/{workflow_id}")
-async def delete_workflow(workflow_id: int, session: AsyncSession = Depends(get_session)):
+async def delete_workflow(workflow_id: int, session: AsyncSession = Depends(get_session), user_id: str = Depends(require_user)):
     stmt = select(Workflow).where(Workflow.id == workflow_id)
     result = await session.execute(stmt)
     wf = result.scalar_one_or_none()
     if wf is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    if wf.user_id and wf.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     await session.delete(wf)
     await session.commit()
     return {"deleted": True}
@@ -347,24 +416,35 @@ async def validate_graph(body: ValidateGraphBody):
 
 
 @router.post("/workflows/{workflow_id}/run")
-async def start_run(workflow_id: int, body: RunCreate | None = None, background_tasks: BackgroundTasks = None):
+async def start_run(workflow_id: int, body: RunCreate | None = None, background_tasks: BackgroundTasks = None, user_id: str = Depends(require_user), session: AsyncSession = Depends(get_session)):
     background_tasks = background_tasks or BackgroundTasks()
+    # Authorize: user must own the workflow, or it must be global (NULL user)
+    chk = await session.execute(select(Workflow).where(Workflow.id == workflow_id))
+    wf = chk.scalar_one_or_none()
+    if wf is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    if wf.user_id and wf.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     run_id = await create_and_start_run(
         workflow_id,
         trigger_type="manual",
         trigger_payload=(body.start_input if body else None) or {},
+        user_id=user_id,
         background_tasks=background_tasks,
     )
     return {"id": run_id}
 
 
 @router.get("/runs/{run_id}")
-async def get_run(run_id: int, session: AsyncSession = Depends(get_session)):
+async def get_run(run_id: int, session: AsyncSession = Depends(get_session), user_id: str = Depends(require_user)):
     stmt = select(Run).where(Run.id == run_id)
     result = await session.execute(stmt)
     run = result.scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
+    # authorize: either run.user_id matches, or legacy run attached via workflow
+    if run.user_id and run.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     current_node_id: Optional[str] = None
     # Prefer running node if any; otherwise the most recently started node without finished_at
@@ -403,8 +483,15 @@ async def get_run(run_id: int, session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/runs/{run_id}/logs")
-async def get_run_logs(run_id: int, after_id: Optional[int] = None, session: AsyncSession = Depends(get_session)):
+async def get_run_logs(run_id: int, after_id: Optional[int] = None, session: AsyncSession = Depends(get_session), user_id: str = Depends(require_user)):
     stmt = select(Log).where(Log.run_id == run_id)
+    # check authorization via run
+    rchk = await session.execute(select(Run).where(Run.id == run_id))
+    r = rchk.scalar_one_or_none()
+    if r is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if r.user_id and r.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     if after_id is not None:
         stmt = stmt.where(Log.id > after_id)
     stmt = stmt.order_by(Log.ts.asc())
@@ -425,7 +512,7 @@ async def get_run_logs(run_id: int, after_id: Optional[int] = None, session: Asy
 
 
 @router.get("/runs/{run_id}/stream")
-async def stream_run(run_id: int):
+async def stream_run(run_id: int, user_id: str = Depends(require_user)):
     async def event_gen():
         last_id = 0
         last_status: Optional[str] = None
@@ -460,6 +547,9 @@ async def stream_run(run_id: int):
                 if run is None:
                     yield f"data: {json.dumps({'type':'status', 'status':'not_found'})}\n\n"
                     break
+                if run.user_id and run.user_id != user_id:
+                    yield f"data: {json.dumps({'type':'status', 'status':'forbidden'})}\n\n"
+                    break
                 status = run.status.value if hasattr(run.status, 'value') else str(run.status)
                 if status != last_status:
                     last_status = status
@@ -476,6 +566,11 @@ async def stream_run(run_id: int):
 @router.get("/runs/{run_id}/logs/stream")
 async def stream_run_logs_alias(run_id: int):
     return await stream_run(run_id)
+
+
+@router.get("/auth/me")
+async def auth_me(user_id: str = Depends(require_user)):
+    return {"user_id": user_id}
 
 
 class HookPayload(BaseModel):
@@ -510,15 +605,14 @@ class ComposioAuthorizeBody(BaseModel):
 
 
 @router.post("/integrations/composio/authorize")
-async def composio_authorize(body: ComposioAuthorizeBody, request: Request):
+async def composio_authorize(body: ComposioAuthorizeBody, request: Request, user_id: str = Depends(require_user)):
     client = get_composio_client()
     if client is None:
         raise HTTPException(status_code=400, detail="Composio is not configured. Set COMPOSIO_API_KEY and install composio.")
-    user_id = _current_user_id(request)
     auth_config_id = settings.COMPOSIO_AUTH_CONFIGS.get(body.toolkit)
     if not auth_config_id:
         raise HTTPException(status_code=400, detail="Unknown toolkit or COMPOSIO_AUTH_CONFIGS missing for requested toolkit")
-    state = _sign_state({"tk": body.toolkit, "nonce": secrets.token_hex(8)})
+    state = _sign_state({"tk": body.toolkit, "uid": user_id, "nonce": secrets.token_hex(8)})
     cb = str(request.url_for("composio_callback"))
     try:
         # Prefer hosted connect link for OAuth/API-Key flows
@@ -535,14 +629,20 @@ async def composio_callback(
     state: Optional[str] = None,
     connected_account_id: Optional[str] = None,
     session: AsyncSession = Depends(get_session),
+    request: Request = None,
 ):
     client = get_composio_client()
     if client is None:
         raise HTTPException(status_code=400, detail="Composio is not configured. Set COMPOSIO_API_KEY and install composio.")
     if state is None or toolkit is None:
         raise HTTPException(status_code=400, detail="Missing state/toolkit")
-    _ = _parse_state(state)  # keep for future use
-    user_id = "system-user"  # single-tenant for now
+    parsed = _parse_state(state)
+    state_uid = str((parsed or {}).get("uid") or "").strip()
+    state_toolkit = str((parsed or {}).get("tk") or "").strip()
+    # Fallback to header-based uid if no uid in state (rare)
+    user_id = state_uid or _current_user_id(request)
+    if state_toolkit and toolkit and state_toolkit != toolkit:
+        raise HTTPException(status_code=400, detail="State/toolkit mismatch")
     # Wait for connection using request id if provided
     connected = None
     if connection_request_id:
@@ -584,7 +684,7 @@ async def composio_callback(
     frontend = _frontend_base_url()
     success_url = f"{frontend}/integrations/success"
 
-    if not resolved_id:
+    if (request.query_params.get("status") == "failed") or (not resolved_id) or (not user_id) or (user_id == "system-user"):
         # No connected id available; redirect but do not persist
         return RedirectResponse(url=success_url)
 
@@ -601,8 +701,8 @@ async def composio_callback(
 
 
 @router.get("/integrations/composio/accounts")
-async def list_composio_accounts(toolkit: Optional[str] = None, session: AsyncSession = Depends(get_session)):
-    user_id = "system-user"
+async def list_composio_accounts(toolkit: Optional[str] = None, session: AsyncSession = Depends(get_session), request: Request = None, _creds: HTTPAuthorizationCredentials | None = Depends(auth_scheme_optional)):
+    user_id = _current_user_id(request)
     stmt = select(ComposioAccount).where(ComposioAccount.user_id == user_id)
     if toolkit:
         stmt = stmt.where(ComposioAccount.toolkit == toolkit)
@@ -621,8 +721,8 @@ async def list_composio_accounts(toolkit: Optional[str] = None, session: AsyncSe
 
 
 @router.get("/integrations")
-async def list_integrations(session: AsyncSession = Depends(get_session)):
-    user_id = "system-user"
+async def list_integrations(session: AsyncSession = Depends(get_session), request: Request = None, _creds: HTTPAuthorizationCredentials | None = Depends(auth_scheme_optional)):
+    user_id = _current_user_id(request)
     configured_toolkits = settings.COMPOSIO_TOOLKITS
     # Also include any toolkits that have accounts in DB
     tk_stmt = select(ComposioAccount.toolkit).where(ComposioAccount.user_id == user_id).distinct()

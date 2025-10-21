@@ -28,6 +28,7 @@ class Workflow(Base):
     webhook_slug: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True)
     graph_json: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
 
     runs: Mapped[list["Run"]] = relationship("Run", back_populates="workflow")
 
@@ -37,6 +38,7 @@ class Run(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
     status: Mapped[RunStatusEnum] = mapped_column(Enum(RunStatusEnum), default=RunStatusEnum.pending, nullable=False)
     started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)

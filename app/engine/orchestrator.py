@@ -16,13 +16,14 @@ async def create_and_start_run(
     *,
     trigger_type: str = "manual",
     trigger_payload: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
     background_tasks: BackgroundTasks,
 ) -> int:
     async with SessionFactory() as session:  # type: AsyncSession
         wf = await _get_workflow(session, workflow_id)
         if wf is None:
             raise ValueError("Workflow not found")
-        run_id = await _insert_run(session, workflow_id, trigger_type, trigger_payload)
+        run_id = await _insert_run(session, workflow_id, trigger_type, trigger_payload, user_id)
         await session.commit()
 
     background_tasks.add_task(execute_run, run_id, SessionFactory, None)
@@ -35,8 +36,8 @@ async def _get_workflow(session: AsyncSession, workflow_id: int) -> Workflow | N
     return result.scalar_one_or_none()
 
 
-async def _insert_run(session: AsyncSession, workflow_id: int, trigger_type: str, trigger_payload: Optional[Dict[str, Any]]) -> int:
-    stmt = insert(Run).values(workflow_id=workflow_id, trigger_type=trigger_type, trigger_payload_json=trigger_payload or {})
+async def _insert_run(session: AsyncSession, workflow_id: int, trigger_type: str, trigger_payload: Optional[Dict[str, Any]], user_id: Optional[str]) -> int:
+    stmt = insert(Run).values(workflow_id=workflow_id, user_id=user_id, trigger_type=trigger_type, trigger_payload_json=trigger_payload or {})
     result = await session.execute(stmt)
     run_id = result.inserted_primary_key[0]
     return int(run_id)

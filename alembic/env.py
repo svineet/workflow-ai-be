@@ -55,6 +55,16 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _sync_url_from_env() -> str | None:
+    env_url = os.getenv("DATABASE_URL")
+    if not env_url:
+        return None
+    # Convert async driver to sync for Alembic
+    if "+asyncpg" in env_url:
+        return env_url.replace("+asyncpg", "+psycopg")
+    return env_url
+
+
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode.
 
@@ -62,8 +72,15 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    ini_section = config.get_section(config.config_ini_section, {})
+    # Prefer env DATABASE_URL if present
+    env_sync_url = _sync_url_from_env()
+    if env_sync_url:
+        ini_section = dict(ini_section)
+        ini_section["sqlalchemy.url"] = env_sync_url
+
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        ini_section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
