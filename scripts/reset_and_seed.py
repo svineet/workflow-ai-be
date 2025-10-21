@@ -97,6 +97,114 @@ AGENT_CALC_GRAPH: Dict[str, Any] = {
 }
 
 
+# Examples from assistant prompt
+EX_JOKE_GMAIL_GRAPH: Dict[str, Any] = {
+    "nodes": [
+        {"id": "start", "type": "start", "settings": {"payload": {"email": "friend@example.com"}}},
+        {"id": "agent", "type": "agent.react", "settings": {
+            "system": "You write a single‑line programming joke.",
+            "prompt": "Write a short, clean one‑liner programming joke.",
+            "model": "gpt-5-mini"
+        }},
+        {"id": "email", "type": "tool.composio", "settings": {
+            "toolkit": "GMAIL",
+            "tool_slug": "GMAIL_SEND_EMAIL",
+            "args": {
+                "to": ["{{ start.data.email }}"],
+                "subject": "A quick joke for you",
+                "body": "{{ upstream.agent.final }}"
+            }
+        }},
+        {"id": "show", "type": "show", "settings": {"template": "Joke sent to {{ start.data.email }}: {{ upstream.agent.final }}"}}
+    ],
+    "edges": [
+        {"id": "e1", "from": "start", "to": "agent"},
+        {"id": "e2", "from": "agent", "to": "show"},
+        {"id": "e3", "from": "start", "to": "show"},
+        {"id": "t1", "from": "agent", "to": "email", "kind": "tool"}
+    ],
+}
+
+EX_FETCH_SUMMARIZE_SHOW_GRAPH: Dict[str, Any] = {
+    "nodes": [
+        {"id": "get", "type": "http.request", "settings": {"method": "GET", "url": "https://api.github.com/repos/python/cpython", "headers": {"Accept": "application/vnd.github+json"}}},
+        {"id": "summ", "type": "llm.simple", "settings": {"prompt": "Summarize key facts about this repository: {{ get.data }}", "model": "gpt-4o-mini"}},
+        {"id": "show", "type": "show", "settings": {"template": "Summary: {{ upstream.summ.text }}"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "get", "to": "summ"},
+        {"id": "e2", "from": "summ", "to": "show"},
+    ],
+}
+
+EX_AGENT_WEBSEARCH_GRAPH: Dict[str, Any] = {
+    "nodes": [
+        {"id": "start", "type": "start", "settings": {"payload": {"query": "Best coffee shops in SF"}}},
+        {"id": "agent", "type": "agent.react", "settings": {
+            "system": "You research and provide concise recommendations using the web search tool when helpful.",
+            "prompt": "Find 3 highly rated coffee shops near downtown SF and explain briefly why.",
+            "model": "gpt-5"
+        }},
+        {"id": "web", "type": "tool.websearch", "settings": {}},
+        {"id": "show", "type": "show", "settings": {"template": "Results: {{ upstream.agent.final }}"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "start", "to": "agent"},
+        {"id": "e2", "from": "agent", "to": "show"},
+        {"id": "t1", "from": "agent", "to": "web", "kind": "tool"},
+    ],
+}
+
+EX_SLACK_ANNOUNCE_GRAPH: Dict[str, Any] = {
+    "nodes": [
+        {"id": "start", "type": "start", "settings": {"payload": {"channel": "#general"}}},
+        {"id": "agent", "type": "agent.react", "settings": {
+            "system": "You craft a short friendly announcement with emojis.",
+            "prompt": "Announce: Workflow AI backend has new seed workflows! Keep under 25 words. Post it to Slack in any channel. Report what you did.",
+            "model": "gpt-5"
+        }},
+        {"id": "slack", "type": "tool.composio", "settings": {
+            "toolkit": "SLACK",
+            "tool_slug": "SLACK_SEND_MESSAGE",
+            "args": {"channel": "{{ start.data.channel }}", "text": "{{ upstream.agent.final }}"}
+        }},
+        {"id": "show", "type": "show", "settings": {"template": "Slack: {{ start.data.channel }} ← {{ upstream.agent.final }}"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "start", "to": "agent"},
+        {"id": "e2", "from": "agent", "to": "show"},
+        {"id": "t1", "from": "agent", "to": "slack", "kind": "tool"},
+    ],
+}
+
+EX_CAL_CREATE_EVENT_GRAPH: Dict[str, Any] = {
+    "nodes": [
+        {"id": "start", "type": "start", "settings": {"payload": {"title": "Team Sync", "when": "2025-11-05T10:00:00Z"}}},
+        {"id": "agent", "type": "agent.react", "settings": {
+            "system": "You convert details into a calendar description.",
+            "prompt": "Create a one‑sentence description for the meeting title {{ start.data.title }}.",
+            "model": "gpt-5"
+        }},
+        {"id": "gcal", "type": "tool.composio", "settings": {
+            "toolkit": "GOOGLECALENDAR",
+            "tool_slug": "GOOGLECALENDAR_CREATE_EVENT",
+            "args": {
+                "title": "{{ start.data.title }}",
+                "start_time": "{{ start.data.when }}",
+                "end_time": "{{ start.data.when }}",
+                "description": "{{ upstream.agent.final }}"
+            }
+        }},
+        {"id": "show", "type": "show", "settings": {"template": "Event created: {{ start.data.title }} at {{ start.data.when }}"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "start", "to": "agent"},
+        {"id": "e2", "from": "agent", "to": "show"},
+        {"id": "e3", "from": "start", "to": "show"},
+        {"id": "t1", "from": "agent", "to": "gcal", "kind": "tool"},
+    ],
+}
+
 COMPOSIO_GMAIL_EMAIL_GRAPH: Dict[str, Any] = {
     "nodes": [
         {
@@ -454,7 +562,7 @@ async def main() -> None:
         async with session.begin():
             await seed_db(session)
         await session.commit()
-    print("Seeded 12 workflows.")
+    print("Seeded 17 workflows.")
 
 
 if __name__ == "__main__":

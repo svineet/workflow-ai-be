@@ -13,7 +13,7 @@ Research today’s top 5 AI news using web search. Produce concise bullets with 
 Coffee Spots Websearch + Slack
 ==============================
 
-Find 3 great coffee shops near downtown SF using web search. Include address, hours, and a one‑line reason for each. Post the recommendations to Slack #coffee-talk with a friendly tone.
+Find 3 great coffee shops near downtown SF using web search. Include address, hours, and a one‑line reason for each. Post the recommendations to Slack #general with a friendly tone.
 
 
 Today’s Calendar Summary + Gmail
