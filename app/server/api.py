@@ -751,3 +751,38 @@ async def list_integrations(session: AsyncSession = Depends(get_session), reques
             ],
         })
     return {"integrations": result}
+
+
+@router.delete("/integrations/composio/accounts/{account_row_id}")
+async def delete_composio_account(account_row_id: int, session: AsyncSession = Depends(get_session), user_id: str = Depends(require_user)):
+    # Look up by row id and user ownership
+    stmt = select(ComposioAccount).where(ComposioAccount.id == account_row_id, ComposioAccount.user_id == user_id)
+    res = await session.execute(stmt)
+    row = res.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    revoked = False
+    client = get_composio_client()
+    if client is not None:
+        try:
+            # Best-effort revoke; API may vary, so handle broadly
+            caid = row.connected_account_id
+            try:
+                revoke_fn = getattr(getattr(client, 'connected_accounts', client), 'revoke', None)
+                if callable(revoke_fn):
+                    revoke_fn(caid)
+                    revoked = True
+                else:
+                    delete_fn = getattr(getattr(client, 'connected_accounts', client), 'delete', None)
+                    if callable(delete_fn):
+                        delete_fn(caid)
+                        revoked = True
+            except Exception:
+                revoked = False
+        except Exception:
+            revoked = False
+
+    await session.delete(row)
+    await session.commit()
+    return {"deleted": True, "revoked": revoked}
