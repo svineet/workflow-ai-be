@@ -46,7 +46,6 @@ class ComposioToolBlock(Block):
         s = self.settings
         toolkit = s.get("toolkit")
         tool_slug = s.get("tool_slug")
-        use_account = s.get("use_account")
         args_raw = s.get("args") or {}
         timeout_seconds = float(s.get("timeout_seconds") or 60.0)
 
@@ -70,29 +69,29 @@ class ComposioToolBlock(Block):
 
         node_id = input.get("node_id")
         await ctx.logger(
-            f"tool.composio: executing {tool_slug} on {toolkit}",
-            {"toolkit": toolkit, "tool_slug": tool_slug, "use_account": use_account, "args_preview": str(args)[:500], "timeout_seconds": timeout_seconds},
+            f"tool.composio: executing {tool_slug}",
+            {"toolkit": toolkit, "tool_slug": tool_slug, "note": "dynamic account resolution", "args_preview": str(args)[:500], "timeout_seconds": timeout_seconds},
             node_id=node_id,
         )
 
-        # Resolve connected account id
-        account_id = use_account
-        if not account_id:
-            # single-tenant lookup of most recent active account for toolkit
-
-            async with SessionFactory() as session:  # type: AsyncSession
-                stmt = select(ComposioAccount).where(ComposioAccount.user_id == caller_user_id, ComposioAccount.toolkit == toolkit).order_by(ComposioAccount.created_at.desc())
-                res = await session.execute(stmt)
-                row = res.scalars().first()
-                account_id = row.connected_account_id if row is not None else None
+        # Resolve connected account id (always dynamic): most recent for this user; filter by toolkit if provided
+        account_id: Optional[str] = None
+        async with SessionFactory() as session:  # type: AsyncSession
+            stmt = select(ComposioAccount).where(ComposioAccount.user_id == caller_user_id)
+            if (toolkit or "").strip():
+                stmt = stmt.where(ComposioAccount.toolkit == toolkit)
+            stmt = stmt.order_by(ComposioAccount.created_at.desc())
+            res = await session.execute(stmt)
+            row = res.scalars().first()
+            account_id = row.connected_account_id if row is not None else None
 
         if not account_id:
             await ctx.logger(
-                f"ERROR: tool.composio: No connected account found for toolkit {toolkit} for current user.",
+                f"ERROR: tool.composio: No connected account found for current user.",
                 {"toolkit": toolkit, "error": "No connected account", "user_id": caller_user_id},
                 node_id=input.get("node_id"),
             )
-            raise ValueError(f"No connected account found for toolkit {toolkit}. Authorize via Integrations.")
+            raise ValueError("No connected Composio account found. Authorize via Integrations.")
         client = get_composio_client()
         resp: Any
         if client is None:
