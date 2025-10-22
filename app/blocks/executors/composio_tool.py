@@ -53,7 +53,8 @@ class ComposioToolBlock(Block):
             raise ValueError("COMPOSIO_API_KEY is required for tool.composio")
 
         upstream = input.get("upstream") or {}
-        caller_user_id: str = str(input.get("user_id") or "system-user")
+        caller_user_id_val = input.get("user_id")
+        caller_user_id: Optional[str] = str(caller_user_id_val) if caller_user_id_val is not None else None
         extra_ctx = {"settings": s, "trigger": input.get("trigger") or {}, "nodes": upstream}
 
         def _render_map(obj: Any) -> Any:
@@ -76,6 +77,13 @@ class ComposioToolBlock(Block):
 
         # Resolve connected account id (always dynamic): most recent for this user; filter by toolkit if provided
         account_id: Optional[str] = None
+        if not caller_user_id:
+            await ctx.logger(
+                "ERROR: tool.composio: missing user_id in run; cannot resolve connected account.",
+                {"toolkit": toolkit},
+                node_id=node_id,
+            )
+            return ComposioToolOutput(provider=toolkit or "composio", account_id="", result={"ok": False, "error": "missing_user_id"}).model_dump()
         async with SessionFactory() as session:  # type: AsyncSession
             stmt = select(ComposioAccount).where(ComposioAccount.user_id == caller_user_id)
             if (toolkit or "").strip():
@@ -91,7 +99,7 @@ class ComposioToolBlock(Block):
                 {"toolkit": toolkit, "error": "No connected account", "user_id": caller_user_id},
                 node_id=input.get("node_id"),
             )
-            raise ValueError("No connected Composio account found. Authorize via Integrations.")
+            return ComposioToolOutput(provider=toolkit or "composio", account_id="", result={"ok": False, "error": "no_connected_account"}).model_dump()
         client = get_composio_client()
         resp: Any
         if client is None:
