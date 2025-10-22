@@ -106,38 +106,100 @@ class AgentReactBlock(Block):
 
         # Fetch Composio tools by toolkits and by specific slugs, then merge
         tools: List[Any] = []
-        if toolkit_hints or tool_slugs:
+        # Extract user_id from run to pass to Composio for user-scoped connections
+        run_user_id = input.get("user_id")
+        if not run_user_id:
+            await ctx.logger(
+                "agent.react: missing user_id; Composio tools will not be loaded",
+                {"error": "missing_user_id"},
+                node_id=node_id,
+            )
+        if (toolkit_hints or tool_slugs) and run_user_id:
+            # Validate user has connected accounts before fetching tools
+            from ...services.composio import get_user_composio_accounts, derive_toolkit_from_slug
+            
+            user_accounts_by_toolkit = await get_user_composio_accounts(run_user_id)
+            
             composio_agents = get_composio_openai_agents_client()
             if composio_agents is None:
                 raise ValueError("Composio OpenAI Agents provider is not available. Ensure composio-openai-agents is installed and COMPOSIO_API_KEY is set.")
             try:
                 if toolkit_hints:
-                    tk_tools = composio_agents.tools.get(user_id="system-user", toolkits=toolkit_hints)
-                    if isinstance(tk_tools, list):
-                        tools.extend(tk_tools)
-                    await ctx.logger(
-                        "agent.react(openai_agents): fetched tools by toolkits",
-                        {"count": len(tk_tools) if isinstance(tk_tools, list) else 0, "toolkits": toolkit_hints},
-                        node_id=node_id,
-                    )
+                    # Filter to toolkits that have connected accounts
+                    valid_toolkits = [tk for tk in toolkit_hints if tk in user_accounts_by_toolkit]
+                    missing_toolkits = [tk for tk in toolkit_hints if tk not in user_accounts_by_toolkit]
+                    if missing_toolkits:
+                        await ctx.logger(
+                            f"agent.react: missing connected accounts for toolkits: {', '.join(missing_toolkits)}",
+                            {"missing_toolkits": missing_toolkits, "user_id": run_user_id},
+                            node_id=node_id,
+                        )
+                    if valid_toolkits:
+                        for tk in valid_toolkits:
+                            await ctx.logger(
+                                f"agent.react: using {tk} account",
+                                {"toolkit": tk, "account_id": user_accounts_by_toolkit[tk], "user_id": run_user_id},
+                                node_id=node_id,
+                            )
+                        tk_tools = composio_agents.tools.get(user_id=run_user_id, toolkits=valid_toolkits)
+                        if isinstance(tk_tools, list):
+                            tools.extend(tk_tools)
+                        await ctx.logger(
+                            "agent.react(openai_agents): fetched tools by toolkits",
+                            {"count": len(tk_tools) if isinstance(tk_tools, list) else 0, "toolkits": valid_toolkits},
+                            node_id=node_id,
+                        )
+                    else:
+                        await ctx.logger(
+                            "agent.react: no valid connected accounts for requested toolkits",
+                            {"requested": toolkit_hints, "user_id": run_user_id},
+                            node_id=node_id,
+                        )
                 if tool_slugs:
-                    slug_tools = composio_agents.tools.get(user_id="system-user", tools=tool_slugs)
-                    if isinstance(slug_tools, list):
-                        tools.extend(slug_tools)
-                    await ctx.logger(
-                        "agent.react(openai_agents): fetched tools by slugs",
-                        {"count": len(slug_tools) if isinstance(slug_tools, list) else 0, "slugs": tool_slugs},
-                        node_id=node_id,
-                    )
+                    # Derive toolkit from each slug and validate account availability
+                    valid_slugs = []
+                    for slug in tool_slugs:
+                        slug_toolkit = derive_toolkit_from_slug(slug)
+                        if slug_toolkit and slug_toolkit in user_accounts_by_toolkit:
+                            valid_slugs.append(slug)
+                            await ctx.logger(
+                                f"agent.react: using {slug_toolkit} account for tool {slug}",
+                                {"toolkit": slug_toolkit, "account_id": user_accounts_by_toolkit[slug_toolkit], "user_id": run_user_id},
+                                node_id=node_id,
+                            )
+                        elif slug_toolkit:
+                            await ctx.logger(
+                                f"agent.react: missing account for tool {slug} (toolkit {slug_toolkit})",
+                                {"slug": slug, "derived_toolkit": slug_toolkit, "user_id": run_user_id},
+                                node_id=node_id,
+                            )
+                    if valid_slugs:
+                        slug_tools = composio_agents.tools.get(user_id=run_user_id, tools=valid_slugs)
+                        if isinstance(slug_tools, list):
+                            tools.extend(slug_tools)
+                        await ctx.logger(
+                            "agent.react(openai_agents): fetched tools by slugs",
+                            {"count": len(slug_tools) if isinstance(slug_tools, list) else 0, "slugs": valid_slugs},
+                            node_id=node_id,
+                        )
                 if not tools and not (toolkit_hints or tool_slugs):
-                    env_tools = composio_agents.tools.get(user_id="system-user", toolkits=settings.COMPOSIO_TOOLKITS)
-                    if isinstance(env_tools, list):
-                        tools.extend(env_tools)
-                    await ctx.logger(
-                        "agent.react(openai_agents): fetched tools from env toolkits",
-                        {"count": len(env_tools) if isinstance(env_tools, list) else 0, "toolkits": settings.COMPOSIO_TOOLKITS},
-                        node_id=node_id,
-                    )
+                    # Fallback: use env COMPOSIO_TOOLKITS if configured, but only if user has accounts
+                    valid_env_toolkits = [tk for tk in settings.COMPOSIO_TOOLKITS if tk in user_accounts_by_toolkit]
+                    if valid_env_toolkits:
+                        env_tools = composio_agents.tools.get(user_id=run_user_id, toolkits=valid_env_toolkits)
+                        if isinstance(env_tools, list):
+                            tools.extend(env_tools)
+                        await ctx.logger(
+                            "agent.react(openai_agents): fetched tools from env toolkits",
+                            {"count": len(env_tools) if isinstance(env_tools, list) else 0, "toolkits": valid_env_toolkits},
+                            node_id=node_id,
+                        )
+                    else:
+                        await ctx.logger(
+                            "agent.react: no connected accounts for env toolkits",
+                            {"env_toolkits": settings.COMPOSIO_TOOLKITS, "user_id": run_user_id},
+                            node_id=node_id,
+                        )
             except Exception as ex:
                 await ctx.logger(
                     "agent.react(openai_agents): failed to load tools",
@@ -181,6 +243,13 @@ class AgentReactBlock(Block):
         except Exception as ex:
             await ctx.logger("agent.react(openai_agents): run error", {"error": str(ex)}, node_id=node_id)
             raise
+
+        # Log summary of agent completion
+        await ctx.logger(
+            "agent.react(openai_agents): completed",
+            {"user_id": run_user_id or "none", "toolkits": toolkit_hints, "tool_slugs": tool_slugs},
+            node_id=node_id,
+        )
 
         final_text = getattr(result, "final_output", None)
         if not isinstance(final_text, str):

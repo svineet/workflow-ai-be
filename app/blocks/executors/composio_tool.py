@@ -4,16 +4,10 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from ..registry import register
 from ..base import Block, RunContext
 from ...server.settings import settings
 from ...services.composio import get_composio_client
-
-from ...db.models import ComposioAccount
-from ...db.session import SessionFactory
 
 
 class ComposioToolSettings(BaseModel):
@@ -46,6 +40,8 @@ class ComposioToolBlock(Block):
         s = self.settings
         toolkit = s.get("toolkit")
         tool_slug = s.get("tool_slug")
+        # ALWAYS ignore use_account to prevent stale connections; resolve dynamically per run
+        use_account_ignored = s.get("use_account")  # read but don't use
         args_raw = s.get("args") or {}
         timeout_seconds = float(s.get("timeout_seconds") or 60.0)
 
@@ -75,7 +71,7 @@ class ComposioToolBlock(Block):
             node_id=node_id,
         )
 
-        # Resolve connected account id (always dynamic): most recent for this user; filter by toolkit if provided
+        # Resolve connected account id (always dynamic): most recent for this user
         account_id: Optional[str] = None
         if not caller_user_id:
             await ctx.logger(
@@ -84,22 +80,31 @@ class ComposioToolBlock(Block):
                 node_id=node_id,
             )
             return ComposioToolOutput(provider=toolkit or "composio", account_id="", result={"ok": False, "error": "missing_user_id"}).model_dump()
-        async with SessionFactory() as session:  # type: AsyncSession
-            stmt = select(ComposioAccount).where(ComposioAccount.user_id == caller_user_id)
-            if (toolkit or "").strip():
-                stmt = stmt.where(ComposioAccount.toolkit == toolkit)
-            stmt = stmt.order_by(ComposioAccount.created_at.desc())
-            res = await session.execute(stmt)
-            row = res.scalars().first()
-            account_id = row.connected_account_id if row is not None else None
+        
+        from ...services.composio import get_user_composio_accounts, derive_toolkit_from_slug
+        user_accounts_by_toolkit = await get_user_composio_accounts(caller_user_id)
+        
+        # Derive toolkit from slug if not explicitly provided
+        effective_toolkit = (toolkit or "").strip()
+        if not effective_toolkit and tool_slug:
+            effective_toolkit = derive_toolkit_from_slug(tool_slug) or ""
+        
+        account_id = user_accounts_by_toolkit.get(effective_toolkit) if effective_toolkit else None
 
         if not account_id:
             await ctx.logger(
                 f"ERROR: tool.composio: No connected account found for current user.",
-                {"toolkit": toolkit, "error": "No connected account", "user_id": caller_user_id},
+                {"toolkit": effective_toolkit, "tool_slug": tool_slug, "error": "No connected account", "user_id": caller_user_id},
                 node_id=input.get("node_id"),
             )
-            return ComposioToolOutput(provider=toolkit or "composio", account_id="", result={"ok": False, "error": "no_connected_account"}).model_dump()
+            return ComposioToolOutput(provider=effective_toolkit or "composio", account_id="", result={"ok": False, "error": "no_connected_account"}).model_dump()
+        
+        # Log which account we're using
+        await ctx.logger(
+            f"tool.composio: using account for {effective_toolkit}",
+            {"toolkit": effective_toolkit, "account_id": account_id, "user_id": caller_user_id},
+            node_id=node_id,
+        )
         client = get_composio_client()
         resp: Any
         if client is None:
@@ -122,7 +127,7 @@ class ComposioToolBlock(Block):
 
         await ctx.logger(
             f"tool.composio: executed {tool_slug}",
-            {"result_preview": str(resp)[:1000], "account_id": account_id},
+            {"result_preview": str(resp)[:1000], "account_id": account_id, "toolkit": effective_toolkit},
             node_id=node_id,
         )
-        return ComposioToolOutput(provider=toolkit, account_id=account_id, result=resp).model_dump() 
+        return ComposioToolOutput(provider=effective_toolkit or "composio", account_id=account_id, result=resp).model_dump() 
